@@ -142,7 +142,10 @@ export class MemoryPageTrie implements PageTrie {
     if (!Array.isArray(operations)) {
       throw new TypeError("operations must be an array");
     }
-    const copiedOperations = operations.map(copyOperation);
+    const copiedOperations: PageTrieBatchOperation[] = [];
+    for (let index = 0; index < operations.length; index++) {
+      copiedOperations.push(copyOperation(operations[index], index));
+    }
     await this.#enqueue(() => this.#apply(copiedOperations));
   }
 

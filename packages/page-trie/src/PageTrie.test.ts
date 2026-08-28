@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createMPT } from "@ethereumjs/mpt";
 import * as publicApi from "./index.js";
-import { createPageTrie } from "./index.js";
+import { createPageTrie, type PageTrieBatchOperation } from "./index.js";
 import { MemoryPageTrie, type Mpt } from "./PageTrie.js";
 import { computePageKey, PAGE_SIZE, pageCommit, SLOT_SIZE } from "./page.js";
 
@@ -362,9 +362,13 @@ describe("PageTrie validation", () => {
 
   test("rejects malformed batches", async () => {
     const trie = await createPageTrie();
+    const sparseOperations = new Array<PageTrieBatchOperation>(1);
 
     await expect(trie.batch({} as unknown as readonly [])).rejects.toThrow(
       TypeError,
+    );
+    await expect(trie.batch(sparseOperations)).rejects.toThrow(
+      "operations[0] must be an object",
     );
     await expect(
       trie.batch([null as unknown as { type: "del"; key: Uint8Array }]),

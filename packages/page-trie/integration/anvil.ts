@@ -9,6 +9,8 @@ import {
 
 const ANVIL_BIN = process.env.ANVIL_BIN ?? "anvil";
 const MINIMUM_ANVIL_VERSION = [1, 8, 0] as const;
+// The constructor returns `PUSH1 0x20; CALLDATALOAD; PUSH0; CALLDATALOAD;
+// SSTORE; STOP`, writing calldata[32:64] to the slot in calldata[0:32].
 const STORAGE_CONTRACT_INIT_CODE = "0x6007600a5f3960075ff36020355f355500";
 
 type JsonRpcResponse<T> =
@@ -110,12 +112,12 @@ async function getAvailablePort(): Promise<number> {
   });
 
   const address = server.address();
-  if (!address || typeof address === "string") {
-    throw new Error("failed to reserve a local TCP port");
-  }
   await new Promise<void>((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
   });
+  if (!address || typeof address === "string") {
+    throw new Error("failed to reserve a local TCP port");
+  }
   return address.port;
 }
 
