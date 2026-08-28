@@ -73,6 +73,7 @@ Caching is disabled because rollback correctness relies on the MPT checkpoint be
 - Public slot keys and values must be `Uint8Array` instances of exactly 32 bytes.
 - `pageCommit()` accepts only a 4096-byte `Uint8Array`.
 - Type violations throw `TypeError`; size violations throw `RangeError`.
+- Structure (arrays, operation objects, `type` tags) is enforced by the TypeScript types; runtime checks cover only what the types cannot express — byte-array instance and exact length.
 - Mutation inputs are copied before asynchronous work is queued.
 - Values returned by `get()` and `root()` are copies.
 - Dense pages and the page map are private and are published only after a successful MPT commit.
@@ -96,7 +97,7 @@ Root fixtures additionally cover the standard empty MPT root and a manually comp
 
 ## 9. Node Integration Boundary
 
-`integration/anvil.ts` requires the official [Foundry 1.8.0](https://github.com/foundry-rs/foundry/releases/tag/v1.8.0) or newer distribution and verifies that the binary advertises the Monad network feature. It starts `anvil --network monad --hardfork MonadNine`, deploys a minimal storage writer, exercises slots across page boundaries, and mirrors values observed through `eth_getStorageAt` into `PageTrie`.
+`scripts/run_integration_tests.sh` requires the official [Foundry 1.8.0](https://github.com/foundry-rs/foundry/releases/tag/v1.8.0) or newer distribution. It starts `anvil --network monad --hardfork MonadNine` — a build without Monad support fails at startup — and runs `integration/anvil.ts` against it. The test deploys a minimal storage writer, exercises slots across page boundaries, and mirrors values observed through `eth_getStorageAt` into `PageTrie`.
 
 This is an execution and storage-semantics integration test. Anvil's `eth_getProof` response exposes its local Ethereum-style storage proof root, not the MIP-8 page commitment, so it cannot replace the independent ISMC and page-MPT root fixtures.
 

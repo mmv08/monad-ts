@@ -2,6 +2,7 @@ import { createMPT } from "@ethereumjs/mpt";
 
 import {
   assertBytes,
+  bytesToHex,
   computePageKey,
   computeSlotOffset,
   isZero,
@@ -50,12 +51,6 @@ type PageChange = StagedPage & {
   empty: boolean;
 };
 
-function bytesToMapKey(bytes: Uint8Array): string {
-  let key = "";
-  for (const byte of bytes) key += byte.toString(16).padStart(2, "0");
-  return key;
-}
-
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
   if (left.length !== right.length) return false;
   for (let i = 0; i < left.length; i++) {
@@ -64,31 +59,15 @@ function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
   return true;
 }
 
-function copyKey(value: unknown, name: string): Uint8Array {
-  assertBytes(value, SLOT_SIZE, name);
-  return Uint8Array.from(value);
-}
-
 function copyOperation(
-  operation: unknown,
+  operation: PageTrieBatchOperation,
   index: number,
 ): PageTrieBatchOperation {
-  if (typeof operation !== "object" || operation === null) {
-    throw new TypeError(`operations[${index}] must be an object`);
-  }
-
-  const candidate = operation as {
-    type?: unknown;
-    key?: unknown;
-    value?: unknown;
-  };
-  const key = copyKey(candidate.key, `operations[${index}].key`);
-  if (candidate.type === "del") return { type: "del", key };
-  if (candidate.type === "put") {
-    assertBytes(candidate.value, SLOT_SIZE, `operations[${index}].value`);
-    return { type: "put", key, value: Uint8Array.from(candidate.value) };
-  }
-  throw new TypeError(`operations[${index}].type must be "put" or "del"`);
+  assertBytes(operation.key, SLOT_SIZE, `operations[${index}].key`);
+  const key = Uint8Array.from(operation.key);
+  if (operation.type === "del") return { type: "del", key };
+  assertBytes(operation.value, SLOT_SIZE, `operations[${index}].value`);
+  return { type: "put", key, value: Uint8Array.from(operation.value) };
 }
 
 function toMptValue(commitment: Uint8Array): Uint8Array {
@@ -111,37 +90,25 @@ export class MemoryPageTrie implements PageTrie {
   }
 
   async get(key: Uint8Array): Promise<Uint8Array | null> {
-    const copiedKey = copyKey(key, "key");
-    const pendingWrites = this.#writeQueue;
-    await pendingWrites;
+    const pageKey = computePageKey(key);
+    const start = computeSlotOffset(key) * SLOT_SIZE;
+    await this.#writeQueue;
 
-    const pageKey = computePageKey(copiedKey);
-    const page = this.#pages.get(bytesToMapKey(pageKey));
+    const page = this.#pages.get(bytesToHex(pageKey));
     if (!page) return null;
-
-    const start = computeSlotOffset(copiedKey) * SLOT_SIZE;
     if (isZero(page, start, SLOT_SIZE)) return null;
     return page.slice(start, start + SLOT_SIZE);
   }
 
   async put(key: Uint8Array, value: Uint8Array): Promise<void> {
-    const copiedKey = copyKey(key, "key");
-    assertBytes(value, SLOT_SIZE, "value");
-    const copiedValue = Uint8Array.from(value);
-    await this.#enqueue(() =>
-      this.#apply([{ type: "put", key: copiedKey, value: copiedValue }]),
-    );
+    await this.batch([{ type: "put", key, value }]);
   }
 
   async del(key: Uint8Array): Promise<void> {
-    const copiedKey = copyKey(key, "key");
-    await this.#enqueue(() => this.#apply([{ type: "del", key: copiedKey }]));
+    await this.batch([{ type: "del", key }]);
   }
 
   async batch(operations: readonly PageTrieBatchOperation[]): Promise<void> {
-    if (!Array.isArray(operations)) {
-      throw new TypeError("operations must be an array");
-    }
     const copiedOperations: PageTrieBatchOperation[] = [];
     for (let index = 0; index < operations.length; index++) {
       copiedOperations.push(copyOperation(operations[index], index));
@@ -168,7 +135,7 @@ export class MemoryPageTrie implements PageTrie {
     const stagedPages = new Map<string, StagedPage>();
     for (const operation of operations) {
       const pageKey = computePageKey(operation.key);
-      const mapKey = bytesToMapKey(pageKey);
+      const mapKey = bytesToHex(pageKey);
       let staged = stagedPages.get(mapKey);
       if (!staged) {
         staged = {
@@ -199,9 +166,6 @@ export class MemoryPageTrie implements PageTrie {
       changes.push({ ...staged, mapKey, empty });
     }
     if (changes.length === 0) return;
-    changes.sort((left, right) =>
-      left.mapKey < right.mapKey ? -1 : left.mapKey > right.mapKey ? 1 : 0,
-    );
 
     this.#trie.checkpoint();
     try {

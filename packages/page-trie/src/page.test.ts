@@ -1,27 +1,14 @@
 import { describe, expect, test } from "bun:test";
 
+import { uint256 } from "../testing/utils.js";
 import {
+  bytesToHex,
   computePageKey,
   computeSlotOffset,
   PAGE_SIZE,
   pageCommit,
   SLOT_SIZE,
 } from "./page.js";
-
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
-    "",
-  );
-}
-
-function uint256(value: bigint): Uint8Array {
-  const bytes = new Uint8Array(SLOT_SIZE);
-  for (let i = bytes.length - 1; i >= 0; i--) {
-    bytes[i] = Number(value & 0xffn);
-    value >>= 8n;
-  }
-  return bytes;
-}
 
 function setWord(page: Uint8Array, index: number, value: bigint): void {
   page.set(uint256(value), index * SLOT_SIZE);

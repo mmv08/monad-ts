@@ -63,13 +63,13 @@ Invalid byte-array types throw `TypeError`; invalid lengths throw `RangeError`.
 
 ## Integration testing
 
-The integration suite requires an official [Foundry 1.8.0](https://github.com/foundry-rs/foundry/releases/tag/v1.8.0) or newer build with Monad support. It starts a real local node with `anvil --network monad`, deploys a minimal storage contract, writes slots across page boundaries, reads them back through `eth_getStorageAt`, and mirrors the observed words into the page trie.
+The integration suite requires an official [Foundry 1.8.0](https://github.com/foundry-rs/foundry/releases/tag/v1.8.0) or newer build with Monad support. `scripts/run_integration_tests.sh` starts a real local node with `anvil --network monad`, then runs the test file against it. The test deploys a minimal storage contract, writes slots across page boundaries, reads them back through `eth_getStorageAt`, and mirrors the observed words into the page trie.
 
 ```bash
 bun run --cwd packages/page-trie test:integration
 ```
 
-Use `ANVIL_BIN=/path/to/anvil` to select a particular binary. The test rejects Foundry builds compiled without the Monad network feature, even if their version is 1.8.0.
+Use `ANVIL_BIN=/path/to/anvil` to select a particular binary. A Foundry build compiled without the Monad network feature fails at Anvil startup, even if its version is 1.8.0.
 
 Anvil validates EVM storage behavior here; its public storage-proof RPC does not expose the MIP-8 page commitment. The canonical page commitments and MPT roots therefore remain covered by the independent numerical conformance fixtures.
 

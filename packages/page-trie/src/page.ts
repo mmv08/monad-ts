@@ -5,15 +5,19 @@ export const SLOT_SIZE = 32;
 /** Number of storage slots in a MIP-8 page. */
 export const PAGE_SLOTS = 128;
 /** Size of a dense MIP-8 page in bytes. */
-export const PAGE_SIZE = 4096;
+export const PAGE_SIZE = SLOT_SIZE * PAGE_SLOTS;
 
 const PAIR_SIZE = SLOT_SIZE * 2;
 const PAGE_PAIRS = PAGE_SLOTS / 2;
 
+// BLAKE3 compression flags: they tag what a block is (start or end of a
+// chunk, key derivation) so different uses of the same bytes hash differently.
 const CHUNK_START = 1;
 const CHUNK_END = 2;
 const DERIVE_KEY_MATERIAL = 64;
 
+// Fixed starting state from the BLAKE3 spec, inherited from SHA-256 (the
+// fractional parts of the square roots of the first eight primes).
 const BLAKE3_IV = Uint32Array.of(
   0x6a09e667,
   0xbb67ae85,
@@ -25,6 +29,8 @@ const BLAKE3_IV = Uint32Array.of(
   0x5be0cd19,
 );
 
+// Fixed order, from the BLAKE3 spec, in which the 16 message words are
+// reshuffled between compression rounds.
 const MESSAGE_PERMUTATION = Uint8Array.of(
   2,
   6,
@@ -67,6 +73,12 @@ export function isZero(
     if (bytes[i] !== 0) return false;
   }
   return true;
+}
+
+export function bytesToHex(bytes: Uint8Array): string {
+  let hex = "";
+  for (const byte of bytes) hex += byte.toString(16).padStart(2, "0");
+  return hex;
 }
 
 /** Computes the 32-byte page key (`slot >> 7`) for a big-endian storage slot. */
@@ -173,16 +185,10 @@ function compress(
   return output;
 }
 
-function asciiToBytes(value: string): Uint8Array {
-  const bytes = new Uint8Array(value.length);
-  for (let i = 0; i < value.length; i++) {
-    bytes[i] = value.charCodeAt(i);
-  }
-  return bytes;
-}
-
 const leafDomainBlock = new Uint8Array(PAIR_SIZE);
-leafDomainBlock.set(asciiToBytes("ultra_merkle_pair_leaf_domain___"));
+leafDomainBlock.set(
+  new TextEncoder().encode("ultra_merkle_pair_leaf_domain___"),
+);
 const LEAF_IV = compress(BLAKE3_IV, leafDomainBlock, DERIVE_KEY_MATERIAL);
 
 function hashLeaf(pair: Uint8Array): Uint8Array {
@@ -196,14 +202,6 @@ function hashParent(left: Uint8Array, right: Uint8Array): Uint8Array {
   return wordsToBytes(compress(BLAKE3_IV, block, CHUNK_START | CHUNK_END));
 }
 
-function bitmapToBytes(bitmap: bigint): Uint8Array {
-  const bytes = new Uint8Array(16);
-  for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = Number((bitmap >> BigInt(i * 8)) & 0xffn);
-  }
-  return bytes;
-}
-
 type ActiveNode = {
   index: number;
   value: Uint8Array;
@@ -213,22 +211,22 @@ type ActiveNode = {
 export function pageCommit(page: Uint8Array): Uint8Array {
   assertBytes(page, PAGE_SIZE, "page");
 
-  let slotBitmap = 0n;
+  const bitmapBytes = new Uint8Array(PAGE_SLOTS / 8);
+  const activeSlots: boolean[] = [];
+  let anyActive = false;
   for (let i = 0; i < PAGE_SLOTS; i++) {
-    if (!isZero(page, i * SLOT_SIZE, SLOT_SIZE)) {
-      slotBitmap |= 1n << BigInt(i);
+    const active = !isZero(page, i * SLOT_SIZE, SLOT_SIZE);
+    activeSlots.push(active);
+    if (active) {
+      bitmapBytes[i >> 3] |= 1 << (i & 7);
+      anyActive = true;
     }
   }
-
-  const bitmapBytes = bitmapToBytes(slotBitmap);
-  if (slotBitmap === 0n) {
-    return Uint8Array.from(blake3(bitmapBytes));
-  }
+  if (!anyActive) return Uint8Array.from(blake3(bitmapBytes));
 
   let activeNodes: ActiveNode[] = [];
   for (let i = 0; i < PAGE_PAIRS; i++) {
-    const pairMask = 3n << BigInt(i * 2);
-    if ((slotBitmap & pairMask) !== 0n) {
+    if (activeSlots[i * 2] || activeSlots[i * 2 + 1]) {
       activeNodes.push({
         index: i,
         value: hashLeaf(page.subarray(i * PAIR_SIZE, (i + 1) * PAIR_SIZE)),
@@ -236,7 +234,7 @@ export function pageCommit(page: Uint8Array): Uint8Array {
     }
   }
 
-  for (let level = 0; level < 6 && activeNodes.length > 1; level++) {
+  for (let level = 0; activeNodes.length > 1; level++) {
     const nextLevel: ActiveNode[] = [];
     for (let i = 0; i < activeNodes.length; ) {
       const current = activeNodes[i];

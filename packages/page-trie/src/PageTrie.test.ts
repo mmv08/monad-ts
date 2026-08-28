@@ -1,27 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import { createMPT } from "@ethereumjs/mpt";
+import { uint256 } from "../testing/utils.js";
 import * as publicApi from "./index.js";
 import { createPageTrie, type PageTrieBatchOperation } from "./index.js";
 import { MemoryPageTrie, type Mpt } from "./PageTrie.js";
-import { computePageKey, PAGE_SIZE, pageCommit, SLOT_SIZE } from "./page.js";
+import {
+  bytesToHex,
+  computePageKey,
+  PAGE_SIZE,
+  pageCommit,
+  SLOT_SIZE,
+} from "./page.js";
 
 const EMPTY_MPT_ROOT =
   "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421";
-
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
-    "",
-  );
-}
-
-function uint256(value: bigint): Uint8Array {
-  const bytes = new Uint8Array(SLOT_SIZE);
-  for (let i = bytes.length - 1; i >= 0; i--) {
-    bytes[i] = Number(value & 0xffn);
-    value >>= 8n;
-  }
-  return bytes;
-}
 
 async function createInternalMpt(): Promise<
   Awaited<ReturnType<typeof createMPT>>
@@ -360,21 +352,16 @@ describe("PageTrie validation", () => {
     );
   });
 
-  test("rejects malformed batches", async () => {
+  test("rejects batches with malformed byte arrays", async () => {
     const trie = await createPageTrie();
     const sparseOperations = new Array<PageTrieBatchOperation>(1);
 
-    await expect(trie.batch({} as unknown as readonly [])).rejects.toThrow(
-      TypeError,
-    );
-    await expect(trie.batch(sparseOperations)).rejects.toThrow(
-      "operations[0] must be an object",
-    );
+    await expect(trie.batch(sparseOperations)).rejects.toThrow(TypeError);
     await expect(
       trie.batch([null as unknown as { type: "del"; key: Uint8Array }]),
     ).rejects.toThrow(TypeError);
     await expect(
-      trie.batch([{ type: "noop", key: uint256(0n) } as never]),
-    ).rejects.toThrow(TypeError);
+      trie.batch([{ type: "put", key: uint256(0n) } as never]),
+    ).rejects.toThrow("operations[0].value must be a Uint8Array");
   });
 });

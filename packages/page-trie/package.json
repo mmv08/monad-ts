@@ -37,7 +37,7 @@
     "build": "tsc -p tsconfig.build.json",
     "test": "bun test",
     "test:coverage": "bun test --coverage",
-    "test:integration": "bun test ./integration/anvil.ts",
+    "test:integration": "bash scripts/run_integration_tests.sh",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
