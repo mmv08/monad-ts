@@ -59,15 +59,29 @@ function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
   return true;
 }
 
+function assertNever(_: never, message: string): never {
+  throw new TypeError(message);
+}
+
 function copyOperation(
   operation: PageTrieBatchOperation,
   index: number,
 ): PageTrieBatchOperation {
   assertBytes(operation.key, SLOT_SIZE, `operations[${index}].key`);
   const key = Uint8Array.from(operation.key);
-  if (operation.type === "del") return { type: "del", key };
-  assertBytes(operation.value, SLOT_SIZE, `operations[${index}].value`);
-  return { type: "put", key, value: Uint8Array.from(operation.value) };
+
+  switch (operation.type) {
+    case "del":
+      return { type: "del", key };
+    case "put":
+      assertBytes(operation.value, SLOT_SIZE, `operations[${index}].value`);
+      return { type: "put", key, value: Uint8Array.from(operation.value) };
+    default:
+      return assertNever(
+        operation,
+        `operations[${index}].type must be "put" or "del"`,
+      );
+  }
 }
 
 function toMptValue(commitment: Uint8Array): Uint8Array {
@@ -195,7 +209,6 @@ export async function createPageTrie(): Promise<PageTrie> {
   const trie = await createMPT({
     cacheSize: 0,
     useKeyHashing: true,
-    useNodePruning: false,
     useRootPersistence: false,
   });
   return new MemoryPageTrie(trie);

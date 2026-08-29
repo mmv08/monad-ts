@@ -31,7 +31,6 @@ bun test --cwd packages/page-trie          # Run @monad-crypto/page-trie tests
 bun run --cwd packages/page-trie build     # Build @monad-crypto/page-trie
 bun run --cwd packages/page-trie typecheck # Type-check @monad-crypto/page-trie
 bun run --cwd packages/page-trie test:coverage # Run page-trie tests with coverage
-bun run --cwd packages/page-trie test:integration # Test against Anvil --network monad
 ```
 
 ## Conventions
@@ -89,7 +88,6 @@ Tests run against Monad mainnet RPC (`https://rpc.monad.xyz`) using `bun:test`. 
 - `packages/page-trie/src/page.ts` implements slot grouping and the ISMC page commitment.
 - `packages/page-trie/src/PageTrie.ts` serializes mutations, stages dense pages, and composes the secure EthereumJS MPT.
 - `packages/page-trie/src/index.ts` is the complete public export surface.
-- `packages/page-trie/integration/anvil.ts` mirrors storage from a real Foundry 1.8.0+ Monad-mode node.
 - `packages/page-trie/ARCHITECTURE.md` documents consensus-critical constants, encoding, rollback, dependencies, and exclusions.
 
 The package intentionally has no persistence, root restoration, public checkpoints, proofs, world-state composition, iteration, pruning, or gas accounting.

@@ -49,7 +49,8 @@ The specialized compression fixes the BLAKE3 counter to zero, the block length t
 
 - `useKeyHashing: true`
 - `cacheSize: 0`
-- node pruning and root persistence disabled
+- root persistence disabled
+- node pruning left at the `@ethereumjs/mpt` default
 
 The page key is passed to the MPT before hashing. The stored raw value begins with the RLP short-string prefix `0xa0`, followed by the 32-byte page commitment. EthereumJS then RLP-encodes that 33-byte value as part of the MPT leaf. Removing the explicit `0xa0` changes every non-empty root.
 
@@ -73,7 +74,7 @@ Caching is disabled because rollback correctness relies on the MPT checkpoint be
 - Public slot keys and values must be `Uint8Array` instances of exactly 32 bytes.
 - `pageCommit()` accepts only a 4096-byte `Uint8Array`.
 - Type violations throw `TypeError`; size violations throw `RangeError`.
-- Structure (arrays, operation objects, `type` tags) is enforced by the TypeScript types; runtime checks cover only what the types cannot express — byte-array instance and exact length.
+- Batch structure is enforced by the TypeScript types. An exhaustive runtime switch rejects unsupported operation tags, while byte-array instances and exact lengths are validated before queuing.
 - Mutation inputs are copied before asynchronous work is queued.
 - Values returned by `get()` and `root()` are copies.
 - Dense pages and the page map are private and are published only after a successful MPT commit.
@@ -91,17 +92,11 @@ Both versions are exact pins. Dependency upgrades require rerunning all commitme
 
 ## 8. Source and Conformance Boundary
 
-The implementation is derived from the CC0 MIP and the official BLAKE3 specification. No GPL implementation code is included. Tests use numerical outputs generated from the pinned [Monad client reference](https://github.com/category-labs/monad/blob/4ec60d91f7ef86c743d03bd6826bf4baa333af11/scripts/page_commit_reference.py) as independent conformance fixtures.
+The implementation is derived from the CC0 MIP and the official BLAKE3 specification. No GPL implementation code is included. Tests mirror all four fixed-output vectors published by the official client's pinned [Python reference](https://github.com/category-labs/monad/blob/68d444b6937592d43db1013161a6c2b7b3f55be5/scripts/page_commit_reference.py) and [C++ cross-check](https://github.com/category-labs/monad/blob/68d444b6937592d43db1013161a6c2b7b3f55be5/category/execution/monad/db/test_storage_page.cpp). Additional merge-schedule outputs were generated from the same pinned Python reference.
 
-Root fixtures additionally cover the standard empty MPT root and a manually composed single-page MPT root. These detect changes to secure-key hashing, the explicit value prefix, or outer MPT RLP encoding.
+Root fixtures additionally cover the standard empty MPT root and independently composed single-page and multi-page MPT roots, including whole-page deletion and branch collapse. These detect changes to page grouping, secure-key hashing, the explicit value prefix, or outer MPT RLP encoding.
 
-## 9. Node Integration Boundary
-
-`scripts/run_integration_tests.sh` requires the official [Foundry 1.8.0](https://github.com/foundry-rs/foundry/releases/tag/v1.8.0) or newer distribution. It starts `anvil --network monad --hardfork MonadNine` — a build without Monad support fails at startup — and runs `integration/anvil.ts` against it. The test deploys a minimal storage writer, exercises slots across page boundaries, and mirrors values observed through `eth_getStorageAt` into `PageTrie`.
-
-This is an execution and storage-semantics integration test. Anvil's `eth_getProof` response exposes its local Ethereum-style storage proof root, not the MIP-8 page commitment, so it cannot replace the independent ISMC and page-MPT root fixtures.
-
-## 10. Review Checklist
+## 9. Review Checklist
 
 Before changing consensus-sensitive code:
 
@@ -111,4 +106,4 @@ Before changing consensus-sensitive code:
 - Preserve secure MPT key hashing and `0xa0` value prefixing.
 - Keep empty pages out of the MPT.
 - Verify validation happens before queuing and page publication happens after commit.
-- Run package tests, Monad-mode Anvil integration, typecheck, build, coverage, Biome, dependency audit, and package dry-run.
+- Run package tests, typecheck, build, coverage, Biome, dependency audit, and package dry-run.

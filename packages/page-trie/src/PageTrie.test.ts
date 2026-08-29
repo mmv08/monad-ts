@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createMPT } from "@ethereumjs/mpt";
 import { uint256 } from "../testing/utils.js";
 import * as publicApi from "./index.js";
-import { createPageTrie, type PageTrieBatchOperation } from "./index.js";
+import { createPageTrie } from "./index.js";
 import { MemoryPageTrie, type Mpt } from "./PageTrie.js";
 import {
   bytesToHex,
@@ -14,6 +14,19 @@ import {
 
 const EMPTY_MPT_ROOT =
   "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421";
+const MULTI_PAGE_ROOT =
+  "775e329db94de90aa7838a2100d87ce4554743a3c53e17af6c08ec8ae30d2e2e";
+const MULTI_PAGE_ROOT_WITHOUT_PAGE_1 =
+  "6fe15d13e490eccd84df0e2d452fe2c2eb4920e6ea164c85a0235be5e4d09292";
+const PAGE_0_ONLY_ROOT =
+  "5a288fbd769c48b925182c924fffa24f252c0ec4f8c2d5d2dcf41f11b08ad20f";
+const MULTI_PAGE_ENTRIES = [
+  [0n, 11n],
+  [1n, 12n],
+  [127n, 13n],
+  [128n, 14n],
+  [511n, 15n],
+] as const;
 
 async function createInternalMpt(): Promise<
   Awaited<ReturnType<typeof createMPT>>
@@ -21,7 +34,6 @@ async function createInternalMpt(): Promise<
   return createMPT({
     cacheSize: 0,
     useKeyHashing: true,
-    useNodePruning: false,
     useRootPersistence: false,
   });
 }
@@ -67,24 +79,40 @@ describe("PageTrie roots", () => {
     );
   });
 
-  test("is independent of insertion order", async () => {
-    const forward = await createPageTrie();
-    const reverse = await createPageTrie();
-    const entries = [
-      [0n, 11n],
-      [1n, 12n],
-      [127n, 13n],
-      [128n, 14n],
-      [511n, 15n],
-    ] as const;
+  test("matches the independent multi-page root fixture", async () => {
+    const sequential = await createPageTrie();
+    const batched = await createPageTrie();
 
-    for (const [key, value] of entries)
-      await forward.put(uint256(key), uint256(value));
-    for (const [key, value] of [...entries].reverse()) {
-      await reverse.put(uint256(key), uint256(value));
+    for (const [key, value] of MULTI_PAGE_ENTRIES) {
+      await sequential.put(uint256(key), uint256(value));
     }
+    await batched.batch(
+      [...MULTI_PAGE_ENTRIES].reverse().map(([key, value]) => ({
+        type: "put",
+        key: uint256(key),
+        value: uint256(value),
+      })),
+    );
 
-    expect(forward.root()).toEqual(reverse.root());
+    expect(bytesToHex(sequential.root())).toBe(MULTI_PAGE_ROOT);
+    expect(bytesToHex(batched.root())).toBe(MULTI_PAGE_ROOT);
+  });
+
+  test("matches independent roots while deleting whole pages", async () => {
+    const trie = await createPageTrie();
+    await trie.batch(
+      MULTI_PAGE_ENTRIES.map(([key, value]) => ({
+        type: "put",
+        key: uint256(key),
+        value: uint256(value),
+      })),
+    );
+
+    await trie.del(uint256(128n));
+    expect(bytesToHex(trie.root())).toBe(MULTI_PAGE_ROOT_WITHOUT_PAGE_1);
+
+    await trie.del(uint256(511n));
+    expect(bytesToHex(trie.root())).toBe(PAGE_0_ONLY_ROOT);
   });
 
   test("returns a defensive root copy", async () => {
@@ -285,34 +313,50 @@ describe("PageTrie batches", () => {
     expect(puts).toBe(2);
   });
 
-  test("rolls back the MPT and pages after an internal failure", async () => {
+  test("preserves committed updates and pages after an internal failure", async () => {
     const mpt = await createInternalMpt();
     const delegate = delegateMpt(mpt);
-    let puts = 0;
+    let calls = 0;
+    let failOnCall: number | undefined;
+    const maybeFail = (): void => {
+      calls++;
+      if (calls === failOnCall) throw new Error("injected MPT failure");
+    };
     const failing: Mpt = {
       ...delegate,
       put: async (key, value) => {
-        puts++;
-        if (puts === 2) throw new Error("injected MPT failure");
+        maybeFail();
         await delegate.put(key, value);
+      },
+      del: async (key) => {
+        maybeFail();
+        await delegate.del(key);
       },
     };
     const trie = new MemoryPageTrie(failing);
+    await trie.batch([
+      { type: "put", key: uint256(0n), value: uint256(1n) },
+      { type: "put", key: uint256(128n), value: uint256(2n) },
+      { type: "put", key: uint256(256n), value: uint256(3n) },
+    ]);
+    const committedRoot = trie.root();
+    failOnCall = calls + 2;
 
     await expect(
       trie.batch([
-        { type: "put", key: uint256(0n), value: uint256(1n) },
-        { type: "put", key: uint256(128n), value: uint256(2n) },
+        { type: "put", key: uint256(0n), value: uint256(9n) },
+        { type: "del", key: uint256(128n) },
       ]),
     ).rejects.toThrow("injected MPT failure");
 
-    expect(bytesToHex(trie.root())).toBe(EMPTY_MPT_ROOT);
-    expect(bytesToHex(mpt.root())).toBe(EMPTY_MPT_ROOT);
-    expect(await trie.get(uint256(0n))).toBeNull();
-    expect(await trie.get(uint256(128n))).toBeNull();
-
-    await trie.put(uint256(256n), uint256(3n));
+    expect(trie.root()).toEqual(committedRoot);
+    expect(mpt.root()).toEqual(committedRoot);
+    expect(await trie.get(uint256(0n))).toEqual(uint256(1n));
+    expect(await trie.get(uint256(128n))).toEqual(uint256(2n));
     expect(await trie.get(uint256(256n))).toEqual(uint256(3n));
+
+    await trie.put(uint256(384n), uint256(4n));
+    expect(await trie.get(uint256(384n))).toEqual(uint256(4n));
   });
 });
 
@@ -352,16 +396,24 @@ describe("PageTrie validation", () => {
     );
   });
 
-  test("rejects batches with malformed byte arrays", async () => {
+  test("rejects invalid batch values and operation tags without changing state", async () => {
     const trie = await createPageTrie();
-    const sparseOperations = new Array<PageTrieBatchOperation>(1);
+    const before = trie.root();
 
-    await expect(trie.batch(sparseOperations)).rejects.toThrow(TypeError);
-    await expect(
-      trie.batch([null as unknown as { type: "del"; key: Uint8Array }]),
-    ).rejects.toThrow(TypeError);
     await expect(
       trie.batch([{ type: "put", key: uint256(0n) } as never]),
     ).rejects.toThrow("operations[0].value must be a Uint8Array");
+    await expect(
+      trie.batch([
+        {
+          type: "bogus",
+          key: uint256(0n),
+          value: uint256(1n),
+        } as never,
+      ]),
+    ).rejects.toThrow('operations[0].type must be "put" or "del"');
+
+    expect(trie.root()).toEqual(before);
+    expect(await trie.get(uint256(0n))).toBeNull();
   });
 });

@@ -63,6 +63,9 @@ describe("page addressing", () => {
 });
 
 describe("pageCommit", () => {
+  // All fixed-output vectors published by the official client at:
+  // https://github.com/category-labs/monad/blob/68d444b6937592d43db1013161a6c2b7b3f55be5/scripts/page_commit_reference.py
+  // They are also cross-checked by its C++ storage-page test.
   test.each([
     [
       "zero page",
@@ -89,7 +92,7 @@ describe("pageCommit", () => {
       ),
       "e5a642261a2c2dedebd68ebd42237f2210d1eee94553d677d425dc3a46c7a687",
     ],
-  ])("matches the canonical %s vector", (_name, page, commitment) => {
+  ])("matches the official client %s vector", (_name, page, commitment) => {
     expect(bytesToHex(pageCommit(page))).toBe(commitment);
   });
 
@@ -126,7 +129,7 @@ describe("pageCommit", () => {
       [1, 7, 19, 42, 76, 99, 121],
       "e48df95a4a642d309e3f900b77ef5838a2403069ce981c98ef8734380e1b5a0b",
     ],
-  ])("matches the canonical %s merge schedule", (_name, indices, commitment) => {
+  ])("matches the reference-derived %s merge schedule", (_name, indices, commitment) => {
     const page = createPage(indices.map((index) => [index, BigInt(index + 1)]));
     expect(bytesToHex(pageCommit(page))).toBe(commitment);
   });
