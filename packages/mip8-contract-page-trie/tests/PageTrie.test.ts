@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { createMPT } from "@ethereumjs/mpt";
+import { keccak_256 } from "@noble/hashes/sha3.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import * as publicApi from "../src/index.js";
 import { createPageTrie } from "../src/index.js";
+import { mptRoot } from "../src/mpt.js";
 import type { PageTrie } from "../src/PageTrie.js";
 import {
   computePageCommitment,
@@ -35,8 +36,8 @@ const MULTI_PAGE_ENTRIES = [
   [511n, 15n],
 ] as const;
 
-async function rootHex(trie: PageTrie): Promise<string> {
-  return bytesToHex(await trie.root());
+function rootHex(trie: PageTrie): string {
+  return bytesToHex(trie.root());
 }
 
 describe("PageTrie roots", () => {
@@ -52,18 +53,18 @@ describe("PageTrie roots", () => {
     ]);
   });
 
-  test("starts at the canonical empty MPT root", async () => {
-    expect(await rootHex(createPageTrie())).toBe(ROOT_FIXTURES.empty);
+  test("starts at the canonical empty MPT root", () => {
+    expect(rootHex(createPageTrie())).toBe(ROOT_FIXTURES.empty);
   });
 
-  test("matches the fixed single-slot root fixture", async () => {
+  test("matches the fixed single-slot root fixture", () => {
     const trie = createPageTrie();
     trie.set(uint256(0n), uint256(1n));
 
-    expect(await rootHex(trie)).toBe(ROOT_FIXTURES.singleSlot);
+    expect(rootHex(trie)).toBe(ROOT_FIXTURES.singleSlot);
   });
 
-  test("matches the fixed multi-page root fixture", async () => {
+  test("matches the fixed multi-page root fixture", () => {
     const sequential = createPageTrie();
     const reverseOrdered = createPageTrie();
 
@@ -74,56 +75,45 @@ describe("PageTrie roots", () => {
       reverseOrdered.set(uint256(slot), uint256(value));
     }
 
-    expect(await rootHex(sequential)).toBe(ROOT_FIXTURES.multiplePages);
-    expect(await rootHex(reverseOrdered)).toBe(ROOT_FIXTURES.multiplePages);
+    expect(rootHex(sequential)).toBe(ROOT_FIXTURES.multiplePages);
+    expect(rootHex(reverseOrdered)).toBe(ROOT_FIXTURES.multiplePages);
   });
 
-  test("matches fixed roots while deleting whole pages", async () => {
+  test("matches fixed roots while deleting whole pages", () => {
     const trie = createPageTrie();
     for (const [slot, value] of MULTI_PAGE_ENTRIES) {
       trie.set(uint256(slot), uint256(value));
     }
 
     trie.delete(uint256(128n));
-    expect(await rootHex(trie)).toBe(ROOT_FIXTURES.multiplePagesWithoutPage1);
+    expect(rootHex(trie)).toBe(ROOT_FIXTURES.multiplePagesWithoutPage1);
 
     trie.delete(uint256(511n));
-    expect(await rootHex(trie)).toBe(ROOT_FIXTURES.page0Only);
+    expect(rootHex(trie)).toBe(ROOT_FIXTURES.page0Only);
   });
 
-  test("returns defensive copies of cached roots", async () => {
+  test("returns defensive copies of cached roots", () => {
     const trie = createPageTrie();
-    const expected = await trie.root();
-    const returned = await trie.root();
+    const expected = trie.root();
+    const returned = trie.root();
 
     returned.fill(0xff);
 
-    expect(await trie.root()).toEqual(expected);
+    expect(trie.root()).toEqual(expected);
   });
 
-  test("invalidates the cached root after a mutation", async () => {
+  test("invalidates the cached root after a mutation", () => {
     const trie = createPageTrie();
-    expect(await rootHex(trie)).toBe(ROOT_FIXTURES.empty);
+    expect(rootHex(trie)).toBe(ROOT_FIXTURES.empty);
 
     trie.set(uint256(0n), uint256(1n));
 
-    expect(await rootHex(trie)).toBe(ROOT_FIXTURES.singleSlot);
-  });
-
-  test("captures its state before asynchronous MPT construction", async () => {
-    const trie = createPageTrie();
-    trie.set(uint256(0n), uint256(1n));
-
-    const firstRoot = trie.root();
-    trie.set(uint256(128n), uint256(2n));
-
-    expect(bytesToHex(await firstRoot)).toBe(ROOT_FIXTURES.singleSlot);
-    expect(await rootHex(trie)).not.toBe(ROOT_FIXTURES.singleSlot);
+    expect(rootHex(trie)).toBe(ROOT_FIXTURES.singleSlot);
   });
 });
 
 describe("PageTrie storage", () => {
-  test("sets, gets, and deletes a slot", async () => {
+  test("sets, gets, and deletes a slot", () => {
     const trie = createPageTrie();
     const slot = uint256(42n);
     const value = uint256(99n);
@@ -133,10 +123,10 @@ describe("PageTrie storage", () => {
     expect(trie.get(slot)).toEqual(value);
     trie.delete(slot);
     expect(trie.get(slot)).toBeNull();
-    expect(await rootHex(trie)).toBe(ROOT_FIXTURES.empty);
+    expect(rootHex(trie)).toBe(ROOT_FIXTURES.empty);
   });
 
-  test("treats a zero-word write as deletion", async () => {
+  test("treats a zero-word write as deletion", () => {
     const trie = createPageTrie();
     const slot = uint256(7n);
 
@@ -144,7 +134,7 @@ describe("PageTrie storage", () => {
     trie.set(slot, new Uint8Array(SLOT_SIZE));
 
     expect(trie.get(slot)).toBeNull();
-    expect(await rootHex(trie)).toBe(ROOT_FIXTURES.empty);
+    expect(rootHex(trie)).toBe(ROOT_FIXTURES.empty);
   });
 
   test("preserves untouched words in the same page", () => {
@@ -196,7 +186,7 @@ describe("PageTrie storage", () => {
 });
 
 describe("MIP-8 MPT encoding", () => {
-  test("stores RLP-wrapped commitments under unhashed page keys", async () => {
+  test("keccak-hashes page keys and RLP-wraps commitments", () => {
     const trie = createPageTrie();
     const slot = uint256(0n);
     const value = uint256(1n);
@@ -207,14 +197,10 @@ describe("MIP-8 MPT encoding", () => {
     const mptValue = new Uint8Array(SLOT_SIZE + 1);
     mptValue[0] = 0xa0;
     mptValue.set(computePageCommitment(page), 1);
-    const expected = await createMPT({
-      cacheSize: 0,
-      useKeyHashing: true,
-      useRootPersistence: false,
-    });
-    await expected.put(computePageKey(slot), mptValue);
 
-    expect(await trie.root()).toEqual(expected.root());
+    expect(trie.root()).toEqual(
+      mptRoot([[keccak_256(computePageKey(slot)), mptValue]]),
+    );
   });
 });
 

@@ -6,7 +6,8 @@
     "useIgnoreFile": true
   },
   "files": {
-    "ignoreUnknown": false
+    "ignoreUnknown": false,
+    "includes": ["**", "!packages/mip8-contract-page-trie/tests/fixtures"]
   },
   "formatter": {
     "enabled": true,

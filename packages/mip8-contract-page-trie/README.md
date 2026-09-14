@@ -25,7 +25,7 @@ value[31] = 1
 trie.set(slot, value)
 
 const stored = trie.get(slot)
-const root = await trie.root()
+const root = trie.root()
 
 trie.delete(slot)
 ```
@@ -34,7 +34,7 @@ All slot identifiers and values are exactly 32 bytes. Slot identifiers use the E
 
 Mutations are synchronous in-memory page updates. Rewriting a slot with its current value, or deleting an already-zero slot, is a no-op and leaves a cached root valid.
 
-`root()` records the commitment of every non-empty page before its first asynchronous step, then inserts those commitments into a new Merkle Patricia Trie (MPT). A mutation made while a root is being assembled does not affect that root. The completed root is cached until the next mutation.
+`root()` folds the commitment of every non-empty page into a Merkle Patricia Trie (MPT) and caches the result until the next mutation.
 
 ## Page primitives
 

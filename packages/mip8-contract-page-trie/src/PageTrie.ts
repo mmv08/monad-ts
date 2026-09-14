@@ -1,4 +1,4 @@
-import { createMPT } from "@ethereumjs/mpt";
+import { keccak_256 } from "@noble/hashes/sha3.js";
 
 import {
   abytes,
@@ -9,6 +9,7 @@ import {
   hexToBytes,
   isZero,
 } from "./bytes.js";
+import { mptRoot } from "./mpt.js";
 import {
   computePageCommitment,
   computePageLocation,
@@ -26,29 +27,18 @@ interface PageTrie {
   set(slot: Uint8Array, value: Uint8Array): void;
   /** Deletes a slot. */
   delete(slot: Uint8Array): void;
-  /** Returns a defensive copy of the root for the state visible when called. */
-  root(): Promise<Uint8Array>;
-}
-
-type PageLeaf = {
-  key: Uint8Array;
-  value: Uint8Array;
-};
-
-function toMptValue(commitment: Uint8Array): Uint8Array {
-  return concatBytes(RLP_STRING_32_PREFIX, commitment);
+  /** Returns a defensive copy of the root for the current stored state. */
+  root(): Uint8Array;
 }
 
 class MemoryPageTrie implements PageTrie {
   readonly #pages: Map<string, Uint8Array>;
-  #revision: number;
   #cachedRoot: Uint8Array | undefined;
 
   // Explicit: Bun counts an implicit constructor as an uncovered function,
   // which breaks the 100% coverage threshold.
   constructor() {
     this.#pages = new Map();
-    this.#revision = 0;
   }
 
   get(slot: Uint8Array): Uint8Array | null {
@@ -82,7 +72,6 @@ class MemoryPageTrie implements PageTrie {
       page.set(value, start);
     }
 
-    this.#revision++;
     this.#cachedRoot = undefined;
   }
 
@@ -90,34 +79,18 @@ class MemoryPageTrie implements PageTrie {
     this.set(slot, ZERO_SLOT);
   }
 
-  async root(): Promise<Uint8Array> {
-    const revision = this.#revision;
-    if (this.#cachedRoot) {
-      return copyBytes(this.#cachedRoot);
+  root(): Uint8Array {
+    if (!this.#cachedRoot) {
+      const leaves: [Uint8Array, Uint8Array][] = [];
+      for (const [mapKey, page] of this.#pages) {
+        leaves.push([
+          keccak_256(hexToBytes(mapKey)),
+          concatBytes(RLP_STRING_32_PREFIX, computePageCommitment(page)),
+        ]);
+      }
+      this.#cachedRoot = mptRoot(leaves);
     }
-
-    // Compute every page commitment before the first await. Mutations made
-    // while the MPT is assembled cannot change the state represented here.
-    const leaves: PageLeaf[] = [];
-    for (const [mapKey, page] of this.#pages) {
-      leaves.push({
-        key: hexToBytes(mapKey),
-        value: toMptValue(computePageCommitment(page)),
-      });
-    }
-
-    const trie = await createMPT({
-      cacheSize: 0,
-      useKeyHashing: true,
-      useRootPersistence: false,
-    });
-    for (const leaf of leaves) await trie.put(leaf.key, leaf.value);
-
-    const root = copyBytes(trie.root());
-    if (this.#revision === revision) {
-      this.#cachedRoot = root;
-    }
-    return copyBytes(root);
+    return copyBytes(this.#cachedRoot);
   }
 }
 

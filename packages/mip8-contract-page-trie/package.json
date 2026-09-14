@@ -39,7 +39,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ethereumjs/mpt": "10.1.2",
     "@noble/hashes": "2.2.0"
   }
 }

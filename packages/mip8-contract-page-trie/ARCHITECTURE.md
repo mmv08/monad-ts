@@ -8,7 +8,7 @@ The package implements the in-memory MIP-8 storage trie for one contract:
 
 - 32-byte storage slots are grouped into dense 4096-byte pages.
 - Each non-empty page is committed with MIP-8 ISMC.
-- Page commitments are folded into a fresh secure Ethereum Merkle Patricia Trie (MPT) when a root is requested.
+- Page commitments are folded into a secure Ethereum Merkle Patricia Trie (MPT) when a root is requested.
 - The package exposes reads, writes, deletion, roots, and page primitives.
 
 There is no persistence or API for restoring from an existing root. A new trie is always empty. Proofs, public checkpoints, world-state composition, iteration, pruning, gas accounting, and production or high-performance use are outside this package's security scope.
@@ -24,7 +24,7 @@ There is no persistence or API for restoring from an existing root. A new trie i
 | Slot offset | `slot & 0x7f` |
 | Empty slots | All-zero 32-byte words |
 | Empty pages | Never inserted into the MPT |
-| MPT key | Unhashed 32-byte page key passed to an MPT configured with secure key hashing |
+| MPT key | Unhashed 32-byte page key; the MPT keccak-hashes the key before traversal |
 | MPT value | `0xa0 || computePageCommitment(page)`; the MPT then applies its normal outer RLP encoding |
 | Empty root | `0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421` |
 
@@ -45,29 +45,21 @@ The empty-page commitment is the full BLAKE3 hash of a zero 16-byte bitmap. It i
 
 ## 4. MPT Composition
 
-For every uncached `root()` call, `src/PageTrie.ts` snapshots the current page commitments and creates a new `@ethereumjs/mpt` with:
+`src/mpt.ts` is a minimal Ethereum MPT builder. It hashes a complete set of leaves into a root. It does not get, delete, prove, persist, or incrementally update nodes.
 
-- `useKeyHashing: true`
-- `cacheSize: 0`
-- root persistence disabled
+For every uncached `root()` call, `src/PageTrie.ts` keccak-hashes each page key and passes `(keccak(pageKey), 0xa0 || commitment)` leaves to `mptRoot`. “Secure MPT” means that Keccak hashes the key before trie traversal. It is not an audit claim. `mptRoot` itself does not hash keys.
 
-The new MPT is populated from the snapshot, its root is copied, and the MPT is discarded. Node pruning and historical MPT nodes therefore do not affect retained state.
+The stored raw value begins with the RLP short-string prefix `0xa0`, followed by the 32-byte page commitment. The MPT then RLP-encodes that 33-byte value as part of the leaf. The prefix is encoding rather than domain separation, and removing it changes every non-empty root.
 
-The page key is passed to the MPT before hashing. In this context, “secure MPT” means that Keccak hashes the key before trie traversal; it is not an audit claim. The stored raw value begins with the RLP short-string prefix `0xa0`, followed by the 32-byte page commitment. EthereumJS then RLP-encodes that 33-byte value as part of the MPT leaf. The prefix is encoding rather than domain separation, and removing it changes every non-empty root.
+A node is replaced by `keccak(RLP(node))` when it is the trie root or when its RLP encoding is at least 32 bytes. Shorter non-root nodes are inlined into the parent. MIP-8's 33-byte values never inline; inlining is required for Ethereum TrieTests with short values and must be preserved.
+
+Hex-prefix (compact) nibble encoding follows the Ethereum Yellow Paper: a terminator flag distinguishes leaf from extension, and an odd-length nibble path packs the first nibble into the flag byte.
 
 ## 5. State and Root Model
 
-The private dense-page map is the only long-lived state. The public storage behavior is documented in [README.md](./README.md). The mutation revision advances only when stored bytes change; every advance invalidates the completed-root cache.
+The private dense-page map is the only long-lived state. The public storage behavior is documented in [README.md](./README.md).
 
-`root()` is asynchronous and handled as follows:
-
-1. Capture the current mutation revision.
-2. Compute the key and MIP-8 commitment for every non-empty page before the first `await`.
-3. Fold those immutable leaves into a fresh secure MPT.
-4. Copy and return the resulting root.
-5. Cache the root only if the mutation revision is unchanged.
-
-This makes every root represent the state visible when `root()` was called. A mutation made while its MPT is being assembled cannot affect the in-flight root and prevents that older result from entering the cache. Every state-changing mutation invalidates the completed-root cache.
+`root()` is synchronous. It rebuilds the MPT from the current non-empty pages, copies the result, and caches that copy until the next state-changing mutation. Rewriting a slot with its current value, or deleting an already-zero slot, is a no-op and leaves the cache valid.
 
 An uncached root rebuild scales with the total number of non-empty pages. Repeated root reads without a mutation use the cache. This tradeoff intentionally favors a small, auditable correctness implementation over incremental-update performance.
 
@@ -79,7 +71,7 @@ An uncached root rebuild scales with the total number of non-empty pages. Repeat
 - Byte-array instances and exact lengths are validated at each public operation boundary by `@noble/hashes`' byte assertion.
 - Slot keys are reduced to page keys synchronously, and values are copied into private dense pages, so later mutation of caller-owned inputs cannot change stored state.
 - Values returned by `get()` and `root()` are copies.
-- Dense pages and the page map are private. Root construction operates on snapshotted keys and commitments rather than mutable pages.
+- Dense pages and the page map are private. Root construction reads those private pages synchronously.
 
 The package uses no filesystem, environment variables, network access, Node.js buffers, secrets, or dynamic code execution.
 
@@ -87,16 +79,17 @@ The package uses no filesystem, environment variables, network access, Node.js b
 
 | Dependency | Version | Purpose |
 | --- | --- | --- |
-| `@ethereumjs/mpt` | `10.1.2` | Secure in-memory Merkle Patricia Trie |
-| `@noble/hashes` | `2.2.0` | BLAKE compression rounds, full BLAKE3 seals, and byte utilities |
+| `@noble/hashes` | `2.2.0` | BLAKE compression rounds, full BLAKE3 seals, keccak for the MPT, and byte utilities |
 
-Both versions are exact pins. Dependency upgrades require rerunning all commitment and root fixtures, root-snapshot tests, and audit.
+The version is an exact pin. Dependency upgrades require rerunning all commitment, root, and official TrieTests fixtures, and an audit.
 
 ## 8. Source and Conformance Boundary
 
-The MIP-specific implementation is derived from the CC0 MIP and the official BLAKE3 specification. The standard ARX rounds and byte utilities come from the exact-pinned MIT-licensed `@noble/hashes`; no GPL implementation code is included. Tests mirror all four fixed-output vectors published by the official client's pinned [Python reference](https://github.com/category-labs/monad/blob/68d444b6937592d43db1013161a6c2b7b3f55be5/scripts/page_commit_reference.py) and [C++ cross-check](https://github.com/category-labs/monad/blob/68d444b6937592d43db1013161a6c2b7b3f55be5/category/execution/monad/db/test_storage_page.cpp). Additional sparse merge-schedule outputs and five deterministic pseudorandom page commitments were generated from the same pinned Python reference.
+The MIP-specific implementation is derived from the CC0 MIP and the official BLAKE3 specification. The standard ARX rounds, keccak, and byte utilities come from the exact-pinned MIT-licensed `@noble/hashes`; no GPL implementation code is included. Tests mirror all four fixed-output vectors published by the official client's pinned [Python reference](https://github.com/category-labs/monad/blob/68d444b6937592d43db1013161a6c2b7b3f55be5/scripts/page_commit_reference.py) and [C++ cross-check](https://github.com/category-labs/monad/blob/68d444b6937592d43db1013161a6c2b7b3f55be5/category/execution/monad/db/test_storage_page.cpp). Additional sparse merge-schedule outputs and five deterministic pseudorandom page commitments were generated from the same pinned Python reference.
 
-Root fixtures additionally cover the standard empty MPT root and fixed single-page and multi-page MPT roots, including whole-page deletion and branch collapse. Their page commitments are cross-checked against the pinned [Python reference](https://github.com/category-labs/monad/blob/68d444b6937592d43db1013161a6c2b7b3f55be5/scripts/page_commit_reference.py), and their MPT composition follows the pinned [MIP-8 specification](https://github.com/monad-crypto/MIPs/blob/6e78a6ac39547882f9905fba86d2c794eb1768ef/MIPs/MIP-8.md). These fixtures detect changes to page grouping, secure-key hashing, the explicit value prefix, or outer MPT RLP encoding. Behavioral tests cover defensive cached-root copies and mutations made while a root is being assembled.
+Root fixtures additionally cover the standard empty MPT root and fixed single-page and multi-page MPT roots, including whole-page deletion and branch collapse. Their page commitments are cross-checked against the pinned [Python reference](https://github.com/category-labs/monad/blob/68d444b6937592d43db1013161a6c2b7b3f55be5/scripts/page_commit_reference.py), and their MPT composition follows the pinned [MIP-8 specification](https://github.com/monad-crypto/MIPs/blob/6e78a6ac39547882f9905fba86d2c794eb1768ef/MIPs/MIP-8.md). These fixtures detect changes to page grouping, secure-key hashing, the explicit value prefix, or outer MPT RLP encoding.
+
+MPT encoding is further checked against the official Ethereum [TrieTests](https://github.com/ethereum/tests/tree/c67e485ff8b5be9abc8ad15345ec21aa22e290d9/TrieTests), including hashed and unhashed suites and sequential inserts that delete keys. Sequential files are folded into a map (`null` deletes) before hashing so the builder can remain insert-all.
 
 ## 9. Review Checklist
 
@@ -106,8 +99,7 @@ Before changing consensus-sensitive code:
 - Preserve the exact-pinned Noble compression-core boundary and rerun every conformance fixture after dependency changes.
 - Preserve big-endian slot grouping and little-endian bitmap sealing.
 - Preserve induced-tree singleton carrying.
-- Preserve secure MPT key hashing and `0xa0` value prefixing.
+- Preserve secure MPT key hashing, hex-prefix encoding, the 32-byte inline threshold, and `0xa0` value prefixing.
 - Keep empty pages out of the MPT.
-- Snapshot every page commitment before the first asynchronous step in `root()`.
-- Cache a completed root only when its captured mutation revision is still current.
+- Cache a completed root only until the next state-changing mutation.
 - Run package tests, typecheck, build, coverage, Biome, and dependency audit.
