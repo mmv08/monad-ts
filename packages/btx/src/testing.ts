@@ -6,18 +6,10 @@
  * and local development, and never import it from the sender library.
  */
 
-import { assertValidCiphertext, unpad, verifyDecryption } from "./btx.js";
+import { unpad, validateCiphertext, verifyDecryption } from "./btx.js";
 import { xorBytes } from "./bytes.js";
 import type { Ciphertext } from "./ciphertext.js";
-import {
-  decodeG1,
-  encodeGt,
-  Fr,
-  G1,
-  G2,
-  pairing,
-  randomScalar,
-} from "./curve.js";
+import { encodeGt, Fr, G1, G2, pairing, randomScalar } from "./curve.js";
 import { hKem, kdf, prg } from "./hash.js";
 
 /** Options for {@link createTestKey}. */
@@ -46,8 +38,9 @@ type TestKey = {
    * Decrypts one ciphertext as batch_decrypt would for its slot.
    *
    * @returns Plaintext and seed, or null if padding is malformed or the guardrail fails.
-   * @throws {BtxError} If the ciphertext fails {@link assertValidCiphertext}.
-   * @throws {TypeError} If associated data is not a Uint8Array.
+   * @throws {BtxError} If admission rejects the commitment or proof.
+   * @throws {TypeError} If associated data or the masked seed is not a Uint8Array.
+   * @throws {RangeError} If the masked seed is not 16 bytes.
    */
   decrypt(
     ciphertext: Ciphertext,
@@ -73,8 +66,8 @@ function createTestKey(options: TestKeyOptions = {}): TestKey {
     trapdoor,
     maxBatchSize,
     decrypt(ciphertext, associatedData) {
-      assertValidCiphertext(ciphertext, associatedData);
-      const pad = pairing(decodeG1(ciphertext.commitment), hole);
+      const commitment = validateCiphertext(ciphertext, associatedData);
+      const pad = pairing(commitment, hole);
       const seed = xorBytes(
         ciphertext.maskedSeed,
         hKem(pad, ciphertext.commitment, associatedData),
@@ -95,5 +88,4 @@ function createTestKey(options: TestKeyOptions = {}): TestKey {
   };
 }
 
-export type { Decryption, TestKey, TestKeyOptions };
-export { createTestKey, DEFAULT_MAX_BATCH_SIZE };
+export { createTestKey };

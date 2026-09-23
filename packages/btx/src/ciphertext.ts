@@ -18,7 +18,7 @@ type Ciphertext = {
 type DeserializeOptions = {
   /**
    * Largest accepted maskedPayload length (C_2), including the 4-byte plaintext-length prefix.
-   * Excludes CIPHERTEXT_OVERHEAD. No limit when omitted.
+   * Excludes CIPHERTEXT_OVERHEAD. Must be a nonnegative safe integer; no limit when omitted.
    *
    * TODO(spec): the PDF leaves this limit to the caller and fixes no default.
    */
@@ -52,7 +52,7 @@ function serializeCiphertext(ciphertext: Ciphertext): Uint8Array {
  * ciphertext is safe to hand to `assertValidCiphertext`. Decoding does not check the client proof
  * or reject an identity commitment.
  *
- * @throws {BtxError} If the wire encoding or masked-payload length is rejected.
+ * @throws {BtxError} If the wire encoding, masked-payload length, or size limit is rejected.
  * @throws {TypeError} If bytes is not a Uint8Array.
  */
 function deserializeCiphertext(
@@ -60,6 +60,17 @@ function deserializeCiphertext(
   options: DeserializeOptions = {},
 ): Ciphertext {
   abytes(bytes);
+  const maxMaskedPayloadLength = options.maxMaskedPayloadLength;
+  if (
+    maxMaskedPayloadLength !== undefined &&
+    (!Number.isSafeInteger(maxMaskedPayloadLength) ||
+      maxMaskedPayloadLength < 0)
+  ) {
+    throw new BtxError(
+      "InvalidLength",
+      "masked-payload size limit must be a nonnegative safe integer",
+    );
+  }
   if (bytes.length < CIPHERTEXT_OVERHEAD) {
     throw new BtxError(
       "InvalidLength",
@@ -79,7 +90,8 @@ function deserializeCiphertext(
     );
   }
   if (
-    payloadLength > (options.maxMaskedPayloadLength ?? Number.POSITIVE_INFINITY)
+    maxMaskedPayloadLength !== undefined &&
+    payloadLength > maxMaskedPayloadLength
   ) {
     throw new BtxError("InvalidLength", "C_2 exceeds the size limit");
   }
@@ -93,12 +105,11 @@ function deserializeCiphertext(
   return { commitment, maskedSeed, maskedPayload, proof };
 }
 
-export type { Ciphertext, DeserializeOptions };
+export type { Ciphertext };
 export {
   CIPHERTEXT_OVERHEAD,
   deserializeCiphertext,
   LENGTH_PREFIX_SIZE,
   MASKED_SEED_SIZE,
-  PROOF_SIZE,
   serializeCiphertext,
 };

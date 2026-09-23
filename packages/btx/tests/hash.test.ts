@@ -1,18 +1,62 @@
 import { describe, expect, test } from "bun:test";
 import { blake3 } from "@noble/hashes/blake3.js";
-import { concatBytes, u64be, utf8ToBytes } from "../src/bytes.js";
-import { absorbLp, challenge, derive, expandR } from "../src/hash.js";
+import { concatBytes, hexToBytes, utf8ToBytes } from "../src/bytes.js";
+import { Gt } from "../src/curve.js";
+import { challenge, expandR, hKem, hRho, kdf, prg } from "../src/hash.js";
 
-describe("absorbLp", () => {
-  test("absorbs the 8-byte big-endian length before the bytes", () => {
-    const input = utf8ToBytes("length prefixed");
-    const context = utf8ToBytes("test/context");
+describe("Appendix E transcripts", () => {
+  const ad = utf8ToBytes("ad");
+  const seed = hexToBytes("000102030405060708090a0b0c0d0e0f");
+
+  test("H_rho prefixes AD and P, then absorbs S bare", () => {
+    const padded = hexToBytes("0000000361626300");
     const expected = blake3
-      .create({ context })
-      .update(concatBytes(u64be(input.length), input))
+      .create({ context: utf8ToBytes("btx/coins/v1") })
+      .update(
+        concatBytes(
+          hexToBytes("0000000000000002"),
+          ad,
+          hexToBytes("0000000000000008"),
+          padded,
+          seed,
+        ),
+      )
+      .xof(16);
+
+    expect(hRho(ad, padded, seed)).toEqual(expected);
+  });
+
+  test("H_kem absorbs the full pad and R bare, then prefixes AD", () => {
+    const commitment = new Uint8Array(48).fill(1);
+    const encodedPad = new Uint8Array(576);
+    // G_T's identity has one in its first 48-byte big-endian limb.
+    encodedPad[47] = 1;
+    const expected = blake3
+      .create({ context: utf8ToBytes("btx/kem/v1") })
+      .update(
+        concatBytes(encodedPad, commitment, hexToBytes("0000000000000002"), ad),
+      )
+      .xof(16);
+
+    expect(hKem(Gt.ONE, commitment, ad)).toEqual(expected);
+  });
+
+  test("KDF absorbs S bare, then prefixes AD", () => {
+    const expected = blake3
+      .create({ context: utf8ToBytes("btx/dem/v1") })
+      .update(concatBytes(seed, hexToBytes("0000000000000002"), ad))
       .xof(32);
 
-    expect(absorbLp(derive("test/context"), input).xof(32)).toEqual(expected);
+    expect(kdf(seed, ad)).toEqual(expected);
+  });
+
+  test.each([
+    0, 65,
+  ])("PRG squeezes %i bytes in keyed mode without absorbing a message", (length) => {
+    const key = new Uint8Array(32).fill(5);
+    const expected = blake3.create({ key }).xof(length);
+
+    expect(prg(key, length)).toEqual(expected);
   });
 });
 

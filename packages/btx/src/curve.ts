@@ -48,7 +48,8 @@ function decodeG1(bytes: Uint8Array): G1Point {
 
 /** Encodes a G_1 point in its compressed form. */
 function encodeG1(point: G1Point): Uint8Array {
-  return point.toBytes(true);
+  // Arithmetic can produce a projective identity that Noble's encoder rejects.
+  return (point.is0() ? G1.Point.ZERO : point).toBytes(true);
 }
 
 /** Decodes a 32-byte big-endian scalar strictly below the group order. */
@@ -84,22 +85,30 @@ function randomScalar(
 }
 
 /**
- * Decodes a canonical 576-byte target-group element. The noble decoder range-checks every limb,
- * so exactly one byte string decodes to each element.
+ * Decodes a canonical 576-byte encryption key, rejecting the identity and values outside G_T.
+ * This checks the key's form, not its source or epoch.
  *
  * TODO(spec): the PDF names a "canonical G_T encoding" without defining it. This uses the tower
- * order c0 ∥ c1 (Fp6 as c0 ∥ c1 ∥ c2, Fp2 as c0 ∥ c1) with 48-byte big-endian limbs, which is the
- * limb order the Rust reference writes. Compare with node-owned vectors when available.
+ * order c0 ∥ c1 (Fp6 as c0 ∥ c1 ∥ c2, Fp2 as c0 ∥ c1) with 48-byte big-endian limbs.
+ * Compare with node-owned vectors when available.
  */
-function decodeGt(bytes: Uint8Array): Fp12 {
+function decodeEncryptionKey(bytes: Uint8Array): Fp12 {
+  let key: Fp12;
   try {
-    return Gt.fromBytes(bytes);
+    key = Gt.fromBytes(bytes);
   } catch {
     throw new BtxError(
       "InvalidPoint",
       `not a canonical ${GT_SIZE}-byte G_T element`,
     );
   }
+  if (Gt.eql(key, Gt.ONE) || !Gt.eql(Gt.pow(key, Fr.ORDER), Gt.ONE)) {
+    throw new BtxError(
+      "InvalidPoint",
+      "encryption key must be a non-identity element of G_T",
+    );
+  }
+  return key;
 }
 
 /** Encodes a target-group element in its canonical 576-byte form. */
@@ -109,8 +118,8 @@ function encodeGt(element: Fp12): Uint8Array {
 
 export type { Fp12, G1Point };
 export {
+  decodeEncryptionKey,
   decodeG1,
-  decodeGt,
   decodeScalar,
   encodeG1,
   encodeGt,
@@ -120,7 +129,6 @@ export {
   G1_SIZE,
   G2,
   Gt,
-  GT_SIZE,
   pairing,
   randomScalar,
   SCALAR_ENTROPY_SIZE,

@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { pad } from "../src/btx.js";
-import { decodeGt, encodeGt, encodeScalar, Gt } from "../src/curve.js";
+import {
+  decodeEncryptionKey,
+  encodeGt,
+  encodeScalar,
+  Gt,
+} from "../src/curve.js";
 import { expandR, hRho } from "../src/hash.js";
 import {
   assertValidCiphertext,
@@ -35,7 +40,7 @@ describe("fixture vectors", () => {
 
     const r = expandR(hRho(associatedData, padded, seed));
     expect(bytesToHex(encodeScalar(r))).toBe(vector.r);
-    const padElement = Gt.pow(decodeGt(key.encryptionKey), r);
+    const padElement = Gt.pow(decodeEncryptionKey(key.encryptionKey), r);
     expect(bytesToHex(encodeGt(padElement))).toBe(vector.pad);
 
     const ciphertext = encrypt({

@@ -67,4 +67,4 @@ function challenge(
   return wideScalar(absorbLp(hasher, associatedData).xof(64));
 }
 
-export { absorbLp, challenge, derive, expandR, hKem, hRho, kdf, prg };
+export { challenge, expandR, hKem, hRho, kdf, prg };

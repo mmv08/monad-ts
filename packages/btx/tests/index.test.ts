@@ -17,9 +17,6 @@ describe("entry points", () => {
   });
 
   test("the testing entry exports only the documented runtime API", () => {
-    expect(Object.keys(testingApi).sort()).toEqual([
-      "DEFAULT_MAX_BATCH_SIZE",
-      "createTestKey",
-    ]);
+    expect(Object.keys(testingApi)).toEqual(["createTestKey"]);
   });
 });

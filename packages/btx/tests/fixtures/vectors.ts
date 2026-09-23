@@ -1,7 +1,7 @@
 import { encrypt, pad, paddedLengthFor } from "../../src/btx.js";
 import { serializeCiphertext } from "../../src/ciphertext.js";
 import {
-  decodeGt,
+  decodeEncryptionKey,
   encodeGt,
   encodeScalar,
   Gt,
@@ -140,7 +140,7 @@ function buildVectors(): Vector[] {
     const paddedLength = c.paddedLength ?? paddedLengthFor(c.plaintext.length);
     const padded = pad(c.plaintext, paddedLength);
     const r = expandR(hRho(c.associatedData, padded, c.seed));
-    const ek = decodeGt(key.encryptionKey);
+    const ek = decodeEncryptionKey(key.encryptionKey);
     const ciphertext = encrypt({
       plaintext: c.plaintext,
       encryptionKey: key.encryptionKey,
@@ -177,4 +177,4 @@ function renderVectors(): string {
 }
 
 export type { Vector };
-export { buildVectors, renderVectors };
+export { renderVectors };

@@ -13,8 +13,8 @@ import {
   MASKED_SEED_SIZE,
 } from "./ciphertext.js";
 import {
+  decodeEncryptionKey,
   decodeG1,
-  decodeGt,
   decodeScalar,
   encodeG1,
   encodeScalar,
@@ -33,7 +33,7 @@ import { challenge, expandR, hKem, hRho, kdf, prg } from "./hash.js";
 type EncryptParameters = {
   /** Unpadded plaintext bytes. */
   readonly plaintext: Uint8Array;
-  /** Canonical 576-byte epoch encryption key. */
+  /** Canonical 576-byte, non-identity G_T key. The caller must authenticate its source and epoch. */
   readonly encryptionKey: Uint8Array;
   /** Transaction binding bytes, constructed by the caller. */
   readonly associatedData: Uint8Array;
@@ -65,14 +65,29 @@ const MAX_PADDED_LENGTH = 0xffff_ffff - LENGTH_PREFIX_SIZE;
 /**
  * The default padded length: |M| rounded up to a multiple of 256, and at least 256.
  *
+ * @throws {BtxError} If the length is not a nonnegative integer or the padded result exceeds the wire limit.
+ *
  * TODO(spec): the PDF leaves padded_len to the sender and fixes no policy. This default comes
  * from the delivery plan; an unusual padded length is itself distinguishing.
  */
 function paddedLengthFor(plaintextLength: number): number {
-  return Math.max(
+  if (!Number.isInteger(plaintextLength) || plaintextLength < 0) {
+    throw new BtxError(
+      "InvalidLength",
+      "plaintext length must be a nonnegative integer",
+    );
+  }
+  const paddedLength = Math.max(
     PADDING_UNIT,
     Math.ceil(plaintextLength / PADDING_UNIT) * PADDING_UNIT,
   );
+  if (paddedLength > MAX_PADDED_LENGTH) {
+    throw new BtxError(
+      "InvalidLength",
+      "default padding exceeds the wire limit",
+    );
+  }
+  return paddedLength;
 }
 
 /** P = u32be(|M|) ∥ M ∥ 0x00 × (padded_len − |M|). */
@@ -173,7 +188,7 @@ function encryptPadded(
 /**
  * Encrypts plaintext under the epoch encryption key, bound to associated data.
  *
- * @throws {BtxError} If the key encoding or padded length is invalid.
+ * @throws {BtxError} If the encryption key or padded length is invalid.
  * @throws {TypeError} If plaintext or associated data is not a Uint8Array.
  * @throws {RangeError} If an injected randomness source returns the wrong length.
  */
@@ -186,12 +201,29 @@ function encrypt({
 }: EncryptParameters): Ciphertext {
   abytes(plaintext);
   abytes(associatedData);
-  const ek = decodeGt(encryptionKey);
+  const ek = decodeEncryptionKey(encryptionKey);
   const padded = pad(
     plaintext,
     paddedLength ?? paddedLengthFor(plaintext.length),
   );
   return encryptPadded(padded, ek, associatedData, random ?? randomBytes);
+}
+
+/** Runs admission and returns the decoded commitment for test decryption to reuse. */
+function validateCiphertext(
+  ciphertext: Ciphertext,
+  associatedData: Uint8Array,
+): G1Point {
+  abytes(associatedData);
+  abytes(ciphertext.maskedSeed, MASKED_SEED_SIZE);
+  const commitment = decodeG1(ciphertext.commitment);
+  if (commitment.is0()) {
+    throw new BtxError("InvalidCiphertext", "R is the identity");
+  }
+  if (!verifyProof(commitment, ciphertext, associatedData)) {
+    throw new BtxError("ClientNizkFailed", "the client proof does not verify");
+  }
+  return commitment;
 }
 
 /**
@@ -200,20 +232,14 @@ function encrypt({
  *
  * @returns Nothing on success; does not decrypt or check a plaintext witness.
  * @throws {BtxError} If the commitment or proof is rejected.
- * @throws {TypeError} If associated data is not a Uint8Array.
+ * @throws {TypeError} If associated data or the masked seed is not a Uint8Array.
+ * @throws {RangeError} If the masked seed is not 16 bytes.
  */
 function assertValidCiphertext(
   ciphertext: Ciphertext,
   associatedData: Uint8Array,
 ): void {
-  abytes(associatedData);
-  const commitment = decodeG1(ciphertext.commitment);
-  if (commitment.is0()) {
-    throw new BtxError("InvalidCiphertext", "R is the identity");
-  }
-  if (!verifyProof(commitment, ciphertext, associatedData)) {
-    throw new BtxError("ClientNizkFailed", "the client proof does not verify");
-  }
+  validateCiphertext(ciphertext, associatedData);
 }
 
 /**
@@ -222,7 +248,6 @@ function assertValidCiphertext(
  * call {@link assertValidCiphertext} first.
  *
  * @returns True for a matching witness, false for a mismatch.
- * @throws {BtxError} If the commitment encoding is invalid.
  * @throws {TypeError} If a byte input is not a Uint8Array.
  * @throws {RangeError} If the seed is not 16 bytes.
  */
@@ -240,7 +265,10 @@ function verifyDecryption({
   const padded = pad(plaintext, paddedLength);
   const r = expandR(hRho(associatedData, padded, seed));
   if (
-    !G1.Point.BASE.multiplyUnsafe(r).equals(decodeG1(ciphertext.commitment))
+    !equalBytes(
+      encodeG1(G1.Point.BASE.multiplyUnsafe(r)),
+      ciphertext.commitment,
+    )
   ) {
     return false;
   }
@@ -248,15 +276,13 @@ function verifyDecryption({
   return equalBytes(ciphertext.maskedPayload, xorBytes(padded, stream));
 }
 
-export type { EncryptParameters, VerifyDecryptionParameters };
 export {
   assertValidCiphertext,
   encrypt,
   encryptPadded,
   pad,
-  PADDING_UNIT,
   paddedLengthFor,
-  SEED_SIZE,
   unpad,
+  validateCiphertext,
   verifyDecryption,
 };

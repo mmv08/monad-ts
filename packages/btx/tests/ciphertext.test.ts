@@ -108,6 +108,33 @@ describe("deserialization rejects", () => {
     );
   });
 
+  test("a nonempty C_2 when the size limit is zero", () => {
+    expectBtxError(
+      () => deserializeCiphertext(bytes, { maxMaskedPayloadLength: 0 }),
+      "InvalidLength",
+    );
+    const empty = { ...ciphertext, maskedPayload: new Uint8Array(0) };
+    expect(
+      deserializeCiphertext(serializeCiphertext(empty), {
+        maxMaskedPayloadLength: 0,
+      }),
+    ).toEqual(empty);
+  });
+
+  test.each([
+    -1,
+    43.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+  ])("an invalid size limit of %d", (maxMaskedPayloadLength) => {
+    expectBtxError(
+      () => deserializeCiphertext(bytes, { maxMaskedPayloadLength }),
+      "InvalidLength",
+    );
+  });
+
   test.each([
     ["an x with no point on the curve", OFF_CURVE],
     ["a point outside the prime-order subgroup", OUT_OF_SUBGROUP],

@@ -18,5 +18,4 @@ class BtxError extends Error {
   }
 }
 
-export type { BtxErrorCode };
 export { BtxError };

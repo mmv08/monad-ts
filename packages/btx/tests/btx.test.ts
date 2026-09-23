@@ -1,7 +1,16 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { encryptPadded, pad, unpad } from "../src/btx.js";
-import { u32be } from "../src/bytes.js";
-import { decodeGt, encodeScalar, Fr, GT_SIZE } from "../src/curve.js";
+import { concatBytes, u32be } from "../src/bytes.js";
+import {
+  decodeEncryptionKey,
+  decodeScalar,
+  encodeG1,
+  encodeGt,
+  encodeScalar,
+  Fr,
+  G1,
+  Gt,
+} from "../src/curve.js";
 import * as hashes from "../src/hash.js";
 import {
   assertValidCiphertext,
@@ -32,8 +41,22 @@ describe("padding", () => {
     [256, 256],
     [257, 512],
     [1000, 1024],
+    [0xffff_ff00, 0xffff_ff00],
   ])("pads a %i-byte plaintext to %i bytes by default", (length, padded) => {
     expect(paddedLengthFor(length)).toBe(padded);
+  });
+
+  test.each([
+    -1,
+    0.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    0xffff_ff01,
+    0xffff_fffb,
+    Number.MAX_SAFE_INTEGER,
+  ])("rejects %d as a default-padding input", (length) => {
+    expectBtxError(() => paddedLengthFor(length), "InvalidLength");
   });
 
   test("prefixes the true length and fills with zeroes", () => {
@@ -158,6 +181,22 @@ describe("encrypt and decrypt", () => {
     expect(generated.decrypt(ciphertext, ad)?.plaintext).toEqual(plaintext);
   });
 
+  test("reuses the admitted commitment throughout test decryption", () => {
+    const plaintext = utf8ToBytes("one point decode");
+    const ciphertext = encrypt({
+      plaintext,
+      encryptionKey: key.encryptionKey,
+      associatedData: ad,
+    });
+    const decode = spyOn(G1.Point, "fromBytes");
+    try {
+      expect(key.decrypt(ciphertext, ad)?.plaintext).toEqual(plaintext);
+      expect(decode).toHaveBeenCalledTimes(1);
+    } finally {
+      decode.mockRestore();
+    }
+  });
+
   test("derives r once per seed and resamples a zero result", () => {
     const seed = pattern(16);
     const plaintext = utf8ToBytes("resampled");
@@ -220,7 +259,7 @@ describe("encrypt and decrypt", () => {
       () =>
         encrypt({
           plaintext: new Uint8Array(0),
-          encryptionKey: new Uint8Array(GT_SIZE - 1),
+          encryptionKey: new Uint8Array(576 - 1),
           associatedData: ad,
         }),
       "InvalidPoint",
@@ -250,6 +289,22 @@ describe("encrypt and decrypt", () => {
     );
   });
 
+  test.each([
+    ["zero", Gt.ZERO],
+    ["the identity", Gt.ONE],
+    ["a canonical field element outside G_T", Gt.add(Gt.ONE, Gt.ONE)],
+  ] as const)("rejects %s as an encryption key", (_, encryptionKey) => {
+    expectBtxError(
+      () =>
+        encrypt({
+          plaintext: utf8ToBytes("must not encrypt under a public constant"),
+          encryptionKey: encodeGt(encryptionKey),
+          associatedData: ad,
+        }),
+      "InvalidPoint",
+    );
+  });
+
   test("rejects a padded length below the plaintext length", () => {
     expectBtxError(
       () =>
@@ -266,11 +321,16 @@ describe("encrypt and decrypt", () => {
 
 describe("assertValidCiphertext", () => {
   const plaintext = utf8ToBytes("bound to this transaction");
+  const seed = pattern(16);
   const ciphertext = encrypt({
     plaintext,
     encryptionKey: key.encryptionKey,
     associatedData: ad,
+    randomBytes: fixedRandom(seed, 0x1234n),
   });
+  const r = hashes.expandR(
+    hashes.hRho(ad, pad(plaintext, ciphertext.maskedPayload.length - 4), seed),
+  );
   const other = encrypt({
     plaintext,
     encryptionKey: key.encryptionKey,
@@ -283,8 +343,65 @@ describe("assertValidCiphertext", () => {
     return copy;
   }
 
+  function withProof(body: Ciphertext, nonce: bigint): Ciphertext {
+    const c = hashes.challenge(
+      body.commitment,
+      encodeG1(G1.Point.BASE.multiplyUnsafe(nonce)),
+      body.maskedSeed,
+      body.maskedPayload,
+      ad,
+    );
+    return {
+      ...body,
+      proof: concatBytes(
+        encodeScalar(c),
+        encodeScalar(Fr.sub(nonce, Fr.mul(c, r))),
+      ),
+    };
+  }
+
   test("accepts an honest ciphertext", () => {
     expect(assertValidCiphertext(ciphertext, ad)).toBeUndefined();
+  });
+
+  test("accepts a zero-nonce proof whose nonzero terms cancel to the identity", () => {
+    const received = deserializeCiphertext(
+      serializeCiphertext(withProof(ciphertext, 0n)),
+    );
+    expect(decodeScalar(received.proof.subarray(0, 32))).not.toBe(0n);
+    expect(decodeScalar(received.proof.subarray(32))).not.toBe(0n);
+
+    expect(assertValidCiphertext(received, ad)).toBeUndefined();
+    expect(
+      verifyDecryption({
+        ciphertext: received,
+        plaintext,
+        seed,
+        associatedData: ad,
+      }),
+    ).toBe(true);
+    expect(key.decrypt(received, ad)).toEqual({ plaintext, seed });
+  });
+
+  test("rejects an invalid proof whose reconstructed nonce commitment is the identity", () => {
+    const proof = concatBytes(encodeScalar(1n), encodeScalar(Fr.neg(r)));
+
+    expectBtxError(
+      () => assertValidCiphertext({ ...ciphertext, proof }, ad),
+      "ClientNizkFailed",
+    );
+  });
+
+  test.each([
+    0, 15, 17,
+  ])("rejects a %i-byte masked seed even with a matching proof", (length) => {
+    const malformed = withProof(
+      { ...ciphertext, maskedSeed: new Uint8Array(length) },
+      1n,
+    );
+
+    expect(() => assertValidCiphertext(malformed, ad)).toThrow(RangeError);
+    expect(() => key.decrypt(malformed, ad)).toThrow(RangeError);
   });
 
   test.each<[string, Partial<Ciphertext>]>([
@@ -354,7 +471,7 @@ describe("assertValidCiphertext", () => {
 
 describe("decryption guardrails", () => {
   const plaintext = utf8ToBytes("guarded");
-  const ek = decodeGt(key.encryptionKey);
+  const ek = decodeEncryptionKey(key.encryptionKey);
   const seed = pattern(16);
   const nonce = 0x1234n;
 
@@ -463,6 +580,30 @@ describe("verifyDecryption", () => {
         associatedData: ad,
       }),
     ).toBe(false);
+  });
+
+  test.each([
+    47, 48, 96,
+  ])("returns false for a %i-byte commitment that does not match the witness", (length) => {
+    expect(
+      verifyDecryption({
+        ciphertext: { ...ciphertext, commitment: new Uint8Array(length) },
+        plaintext,
+        seed,
+        associatedData: ad,
+      }),
+    ).toBe(false);
+  });
+
+  test("returns false rather than throwing when the witness derives zero", () => {
+    const expand = spyOn(hashes, "expandR").mockReturnValue(0n);
+    try {
+      expect(
+        verifyDecryption({ ciphertext, plaintext, seed, associatedData: ad }),
+      ).toBe(false);
+    } finally {
+      expand.mockRestore();
+    }
   });
 
   test("rejects a seed of the wrong length", () => {

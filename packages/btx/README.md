@@ -44,7 +44,7 @@ if (result === null) throw new Error("Decryption failed");
 console.log(new TextDecoder().decode(result.plaintext)); // hello
 ```
 
-For transactions, supply the 576-byte epoch encryption key and construct the associated data that binds the ciphertext to the transaction. Both inputs are `Uint8Array` values.
+For transactions, supply the 576-byte epoch encryption key and construct the associated data that binds the ciphertext to the transaction. Both inputs are `Uint8Array` values. Encryption rejects non-canonical keys, keys outside G_T, and the identity. The caller must still authenticate the key's source and epoch.
 
 ## API
 
@@ -66,13 +66,15 @@ Encryption uses secure platform randomness. Override `randomBytes` only in tests
 
 By default, `encrypt` rounds the plaintext length up to a multiple of 256 bytes, with a minimum of 256. `paddedLengthFor(length)` returns that size. Set `paddedLength` to override it; use the plaintext length to add no zero filler.
 
+`paddedLengthFor` rejects negative, fractional, or non-finite inputs and lengths whose padded result would exceed the ciphertext's u32 length limit.
+
 | Size | Meaning |
 | --- | --- |
 | `paddedLength` | Plaintext capacity, excluding its four-byte length prefix |
 | `maskedPayload.length` | `4 + paddedLength`; this is what `maxMaskedPayloadLength` limits when decoding |
 | Wire length | `CIPHERTEXT_OVERHEAD + maskedPayload.length`, or `136 + paddedLength` |
 
-For example, a padded length of 256 gives 260 masked-payload bytes and 392 wire bytes. Decoding has no size limit unless the caller sets `maxMaskedPayloadLength`.
+For example, a padded length of 256 gives 260 masked-payload bytes and 392 wire bytes. Decoding has no size limit unless the caller sets `maxMaskedPayloadLength`. A supplied limit must be a nonnegative safe integer; omit it rather than passing `Infinity`.
 
 ## Imports
 
