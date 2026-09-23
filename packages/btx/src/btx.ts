@@ -47,6 +47,8 @@ type EncryptParameters = {
 type VerifyDecryptionParameters = {
   /** Ciphertext already admitted by {@link assertValidCiphertext}. */
   readonly ciphertext: Ciphertext;
+  /** Canonical 576-byte, non-identity G_T key used for encryption. The caller must authenticate its source and epoch. */
+  readonly encryptionKey: Uint8Array;
   /** Candidate unpadded plaintext. */
   readonly plaintext: Uint8Array;
   /** Recovered 16-byte seed that witnesses the plaintext. */
@@ -243,16 +245,17 @@ function assertValidCiphertext(
 }
 
 /**
- * Checks that the plaintext and seed reproduce the commitment and masked payload
- * (the specification's verify_decryption). Does not check the proof or masked seed;
- * call {@link assertValidCiphertext} first.
+ * Checks that the plaintext and seed reproduce the commitment, masked seed, and masked payload
+ * under the encryption key. Does not check the proof; call {@link assertValidCiphertext} first.
  *
  * @returns True for a matching witness, false for a mismatch.
+ * @throws {BtxError} If the encryption key is invalid.
  * @throws {TypeError} If a byte input is not a Uint8Array.
  * @throws {RangeError} If the seed is not 16 bytes.
  */
 function verifyDecryption({
   ciphertext,
+  encryptionKey,
   plaintext,
   seed,
   associatedData,
@@ -260,11 +263,13 @@ function verifyDecryption({
   abytes(plaintext);
   abytes(seed, SEED_SIZE);
   abytes(associatedData);
+  const ek = decodeEncryptionKey(encryptionKey);
   const paddedLength = ciphertext.maskedPayload.length - LENGTH_PREFIX_SIZE;
   if (plaintext.length > paddedLength) return false;
   const padded = pad(plaintext, paddedLength);
   const r = expandR(hRho(associatedData, padded, seed));
   if (
+    r === 0n ||
     !equalBytes(
       encodeG1(G1.Point.BASE.multiplyUnsafe(r)),
       ciphertext.commitment,
@@ -272,6 +277,13 @@ function verifyDecryption({
   ) {
     return false;
   }
+  // TODO(spec): Rust's independent witness check also binds C_1 to ek. The PDF's
+  // R/C_2-only check cannot reject a sender's inconsistent C_1 with a valid proof.
+  const expectedMaskedSeed = xorBytes(
+    seed,
+    hKem(Gt.pow(ek, r), ciphertext.commitment, associatedData),
+  );
+  if (!equalBytes(ciphertext.maskedSeed, expectedMaskedSeed)) return false;
   const stream = prg(kdf(seed, associatedData), padded.length);
   return equalBytes(ciphertext.maskedPayload, xorBytes(padded, stream));
 }

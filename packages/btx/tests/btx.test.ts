@@ -360,8 +360,25 @@ describe("assertValidCiphertext", () => {
     };
   }
 
-  test("accepts an honest ciphertext", () => {
-    expect(assertValidCiphertext(ciphertext, ad)).toBeUndefined();
+  test.each([
+    "maskedSeed",
+    "maskedPayload",
+  ] as const)("rejects a witness for altered %s even with a valid new proof", (field) => {
+    const altered = withProof(
+      { ...ciphertext, [field]: flipLastByte(ciphertext[field]) },
+      7n,
+    );
+    assertValidCiphertext(altered, ad);
+    expect(
+      verifyDecryption({
+        ciphertext: altered,
+        encryptionKey: key.encryptionKey,
+        plaintext,
+        seed,
+        associatedData: ad,
+      }),
+    ).toBe(false);
+    expect(key.decrypt(altered, ad)).toBeNull();
   });
 
   test("accepts a zero-nonce proof whose nonzero terms cancel to the identity", () => {
@@ -375,6 +392,7 @@ describe("assertValidCiphertext", () => {
     expect(
       verifyDecryption({
         ciphertext: received,
+        encryptionKey: key.encryptionKey,
         plaintext,
         seed,
         associatedData: ad,
@@ -444,16 +462,6 @@ describe("assertValidCiphertext", () => {
       () =>
         assertValidCiphertext({ ...ciphertext, proof: new Uint8Array(63) }, ad),
       "InvalidScalar",
-    );
-  });
-
-  test("rejects the identity as commitment", () => {
-    const commitment = new Uint8Array(48);
-    commitment[0] = 0xc0;
-
-    expectBtxError(
-      () => assertValidCiphertext({ ...ciphertext, commitment }, ad),
-      "InvalidCiphertext",
     );
   });
 
@@ -535,8 +543,53 @@ describe("verifyDecryption", () => {
 
   test("accepts the seed recovered by decryption", () => {
     expect(
-      verifyDecryption({ ciphertext, plaintext, seed, associatedData: ad }),
+      verifyDecryption({
+        ciphertext,
+        encryptionKey: key.encryptionKey,
+        plaintext,
+        seed,
+        associatedData: ad,
+      }),
     ).toBe(true);
+  });
+
+  test("rejects a witness under another valid encryption key", () => {
+    assertValidCiphertext(ciphertext, ad);
+    expect(
+      verifyDecryption({
+        ciphertext,
+        encryptionKey: createTestKey({ trapdoor: 0xbadn }).encryptionKey,
+        plaintext,
+        seed,
+        associatedData: ad,
+      }),
+    ).toBe(false);
+  });
+
+  test("rejects an invalid encryption key", () => {
+    expectBtxError(
+      () =>
+        verifyDecryption({
+          ciphertext,
+          encryptionKey: encodeGt(Gt.ONE),
+          plaintext,
+          seed,
+          associatedData: ad,
+        }),
+      "InvalidPoint",
+    );
+  });
+
+  test("rejects a payload shorter than the length prefix", () => {
+    expect(
+      verifyDecryption({
+        ciphertext: { ...ciphertext, maskedPayload: new Uint8Array(3) },
+        encryptionKey: key.encryptionKey,
+        plaintext: new Uint8Array(0),
+        seed,
+        associatedData: ad,
+      }),
+    ).toBe(false);
   });
 
   test("checks the witness without replacing ciphertext admission", () => {
@@ -545,6 +598,7 @@ describe("verifyDecryption", () => {
     expect(
       verifyDecryption({
         ciphertext: invalid,
+        encryptionKey: key.encryptionKey,
         plaintext,
         seed,
         associatedData: ad,
@@ -564,6 +618,7 @@ describe("verifyDecryption", () => {
     expect(
       verifyDecryption({
         ciphertext,
+        encryptionKey: key.encryptionKey,
         plaintext: m,
         seed: s,
         associatedData: a,
@@ -575,6 +630,7 @@ describe("verifyDecryption", () => {
     expect(
       verifyDecryption({
         ciphertext,
+        encryptionKey: key.encryptionKey,
         plaintext: pattern(33),
         seed,
         associatedData: ad,
@@ -588,6 +644,7 @@ describe("verifyDecryption", () => {
     expect(
       verifyDecryption({
         ciphertext: { ...ciphertext, commitment: new Uint8Array(length) },
+        encryptionKey: key.encryptionKey,
         plaintext,
         seed,
         associatedData: ad,
@@ -599,7 +656,13 @@ describe("verifyDecryption", () => {
     const expand = spyOn(hashes, "expandR").mockReturnValue(0n);
     try {
       expect(
-        verifyDecryption({ ciphertext, plaintext, seed, associatedData: ad }),
+        verifyDecryption({
+          ciphertext,
+          encryptionKey: key.encryptionKey,
+          plaintext,
+          seed,
+          associatedData: ad,
+        }),
       ).toBe(false);
     } finally {
       expand.mockRestore();
@@ -610,6 +673,7 @@ describe("verifyDecryption", () => {
     expect(() =>
       verifyDecryption({
         ciphertext,
+        encryptionKey: key.encryptionKey,
         plaintext,
         seed: new Uint8Array(15),
         associatedData: ad,

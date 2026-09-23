@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Buffer } from "node:buffer";
 import { u32be } from "../src/bytes.js";
-import { encodeScalar, Fr } from "../src/curve.js";
 import {
   assertValidCiphertext,
   CIPHERTEXT_OVERHEAD,
@@ -25,8 +24,6 @@ const bytes = serializeCiphertext(ciphertext);
 // Compressed G_1 encodings with flag bits 0b100 and a small x; found by trying x = 1, 2, …
 // x = 1: x³ + 4 has no square root, so no point has this x.
 const OFF_CURVE = `${"80".padEnd(94, "0")}01`;
-// x = 4: on the curve, but the point is not in the prime-order subgroup.
-const OUT_OF_SUBGROUP = `${"80".padEnd(94, "0")}04`;
 // x = p: the field modulus is not a canonical field element.
 const NON_CANONICAL =
   "9a0111ea397fe69a4b1ba7b6434bacd764774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaaab";
@@ -74,6 +71,7 @@ describe("serialization", () => {
 });
 
 describe("deserialization rejects", () => {
+  // Rust admission vectors cover trailing bytes, non-subgroup points, and noncanonical scalars.
   test("input shorter than the fixed-width components", () => {
     expectBtxError(
       () => deserializeCiphertext(bytes.subarray(0, CIPHERTEXT_OVERHEAD - 1)),
@@ -89,13 +87,6 @@ describe("deserialization rejects", () => {
 
     expectBtxError(() => deserializeCiphertext(shorter), "InvalidLength");
     expectBtxError(() => deserializeCiphertext(longer), "InvalidLength");
-  });
-
-  test("trailing bytes", () => {
-    const trailing = new Uint8Array(bytes.length + 1);
-    trailing.set(bytes);
-
-    expectBtxError(() => deserializeCiphertext(trailing), "InvalidLength");
   });
 
   test("a C_2 above the caller's size limit", () => {
@@ -137,7 +128,6 @@ describe("deserialization rejects", () => {
 
   test.each([
     ["an x with no point on the curve", OFF_CURVE],
-    ["a point outside the prime-order subgroup", OUT_OF_SUBGROUP],
     ["a non-canonical field element", NON_CANONICAL],
     ["an uncompressed flag", `00${OFF_CURVE.slice(2)}`],
     ["the infinity flag with a nonzero x", `c0${OFF_CURVE.slice(2)}`],
@@ -147,13 +137,6 @@ describe("deserialization rejects", () => {
       () => deserializeCiphertext(withCommitment(hex)),
       "InvalidPoint",
     );
-  });
-
-  test("a proof scalar that is not below the group order", () => {
-    const tampered = bytes.slice();
-    tampered.set(encodeScalar(Fr.ORDER), bytes.length - 32);
-
-    expectBtxError(() => deserializeCiphertext(tampered), "InvalidScalar");
   });
 });
 

@@ -79,7 +79,13 @@ function createTestKey(options: TestKeyOptions = {}): TestKey {
       const plaintext = unpad(padded);
       if (
         plaintext === null ||
-        !verifyDecryption({ ciphertext, plaintext, seed, associatedData })
+        !verifyDecryption({
+          ciphertext,
+          encryptionKey,
+          plaintext,
+          seed,
+          associatedData,
+        })
       ) {
         return null;
       }

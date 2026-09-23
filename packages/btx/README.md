@@ -44,7 +44,7 @@ if (result === null) throw new Error("Decryption failed");
 console.log(new TextDecoder().decode(result.plaintext)); // hello
 ```
 
-For transactions, supply the 576-byte epoch encryption key and construct the associated data that binds the ciphertext to the transaction. Both inputs are `Uint8Array` values. Encryption rejects non-canonical keys, keys outside G_T, and the identity. The caller must still authenticate the key's source and epoch.
+For transactions, supply the 576-byte epoch encryption key in CatBLST's canonical order and construct the associated data that binds the ciphertext to the transaction. Both inputs are `Uint8Array` values. Encryption rejects non-canonical keys, keys outside G_T, and the identity. The caller must still authenticate the key's source and epoch.
 
 ## API
 
@@ -53,10 +53,12 @@ For transactions, supply the 576-byte epoch encryption key and construct the ass
 | `encrypt` | A `Ciphertext` object |
 | `serializeCiphertext` / `deserializeCiphertext` | Convert between the object and wire bytes. Decoding checks the encoding, not the proof. |
 | `assertValidCiphertext` | Checks the commitment and proof. Returns nothing on success; throws on rejection. |
-| `verifyDecryption` | Checks a plaintext and recovered seed against the commitment and masked payload. Returns `true` or `false`. |
+| `verifyDecryption` | Checks a plaintext and recovered seed against the commitment, masked seed, and masked payload under the encryption key. Returns `true` or `false`. |
 | `key.decrypt` | Checks the ciphertext, then returns `{ plaintext, seed }`, or `null` if padding or plaintext checks fail. Throws if the commitment or proof fails. |
 
-Run `assertValidCiphertext(ciphertext, associatedData)` before `verifyDecryption({ ciphertext, plaintext, seed, associatedData })`: the latter does not check the proof or masked seed.
+Run `assertValidCiphertext(ciphertext, associatedData)` before `verifyDecryption({ ciphertext, encryptionKey, plaintext, seed, associatedData })`: the latter does not check the proof. Supply the same authenticated epoch key used for encryption. An invalid key throws; a valid but wrong key returns `false`.
+
+The CatBLST codec replaces the earlier Noble-native G_T encoding. Earlier keys and ciphertexts are not compatible with this version. `verifyDecryption` now requires `encryptionKey`.
 
 Protocol rejections throw `BtxError`; use its `code` to distinguish them. Invalid types or byte lengths can throw `TypeError` or `RangeError`, including in `verifyDecryption`.
 

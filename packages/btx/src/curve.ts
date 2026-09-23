@@ -22,6 +22,9 @@ const G1_SIZE = 48;
 const SCALAR_SIZE = 32;
 /** Byte length of a target-group element. */
 const GT_SIZE = 576;
+/** CatBLST interleaves the two Fp6 halves at each Fp2 index; Noble stores each half together. */
+const GT_FP2_ORDER = [0, 3, 1, 4, 2, 5] as const;
+const FP2_SIZE = 96;
 /** Entropy length required by Noble's nonzero-scalar sampler. */
 const SCALAR_ENTROPY_SIZE = getMinHashLength(Fr.ORDER);
 
@@ -88,14 +91,21 @@ function randomScalar(
  * Decodes a canonical 576-byte encryption key, rejecting the identity and values outside G_T.
  * This checks the key's form, not its source or epoch.
  *
- * TODO(spec): the PDF names a "canonical G_T encoding" without defining it. This uses the tower
- * order c0 ∥ c1 (Fp6 as c0 ∥ c1 ∥ c2, Fp2 as c0 ∥ c1) with 48-byte big-endian limbs.
- * Compare with node-owned vectors when available.
+ * TODO(spec): the PDF does not fix the limb order. Use CatBLST's wire contract: Fp2 index,
+ * then Fp6 half, then Fp component, with 48-byte big-endian limbs.
  */
 function decodeEncryptionKey(bytes: Uint8Array): Fp12 {
   let key: Fp12;
   try {
-    key = Gt.fromBytes(bytes);
+    abytes(bytes, GT_SIZE);
+    const nobleBytes = new Uint8Array(GT_SIZE);
+    for (const [wireIndex, nobleIndex] of GT_FP2_ORDER.entries()) {
+      nobleBytes.set(
+        bytes.subarray(wireIndex * FP2_SIZE, (wireIndex + 1) * FP2_SIZE),
+        nobleIndex * FP2_SIZE,
+      );
+    }
+    key = Gt.fromBytes(nobleBytes);
   } catch {
     throw new BtxError(
       "InvalidPoint",
@@ -111,9 +121,17 @@ function decodeEncryptionKey(bytes: Uint8Array): Fp12 {
   return key;
 }
 
-/** Encodes a target-group element in its canonical 576-byte form. */
+/** Encodes a target-group element in CatBLST's canonical 576-byte form. */
 function encodeGt(element: Fp12): Uint8Array {
-  return Gt.toBytes(element);
+  const nobleBytes = Gt.toBytes(element);
+  const bytes = new Uint8Array(GT_SIZE);
+  for (const [wireIndex, nobleIndex] of GT_FP2_ORDER.entries()) {
+    bytes.set(
+      nobleBytes.subarray(nobleIndex * FP2_SIZE, (nobleIndex + 1) * FP2_SIZE),
+      wireIndex * FP2_SIZE,
+    );
+  }
+  return bytes;
 }
 
 export type { Fp12, G1Point };
