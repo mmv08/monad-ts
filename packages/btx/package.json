@@ -1,0 +1,46 @@
+{
+  "name": "@monad-crypto/btx",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Sender-side BTX encryption for Monad encrypted transactions (internal reference implementation)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/monad-crypto/monad-ts.git",
+    "directory": "packages/btx"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "src/**/*.ts",
+    "ARCHITECTURE.md",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "bun test",
+    "test:coverage": "bun test --coverage",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@noble/curves": "2.3.0",
+    "@noble/hashes": "2.3.0"
+  }
+}

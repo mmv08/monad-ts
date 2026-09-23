@@ -1,0 +1,104 @@
+import { abytes, concatBytes, readU32be, u32be } from "./bytes.js";
+import { decodeG1, decodeScalar, G1_SIZE, SCALAR_SIZE } from "./curve.js";
+import { BtxError } from "./error.js";
+
+/** A BTX ciphertext (R, C_1, C_2, π), each component in its canonical byte form. */
+type Ciphertext = {
+  /** R: the KEM commitment, a compressed G_1 point (48 bytes). */
+  readonly commitment: Uint8Array;
+  /** C_1: the seed masked under the pad (16 bytes). */
+  readonly maskedSeed: Uint8Array;
+  /** C_2: the padded plaintext masked by the stream (4 + padded_len bytes). */
+  readonly maskedPayload: Uint8Array;
+  /** π = (c, s): the Schnorr proof as two 32-byte scalars (64 bytes). */
+  readonly proof: Uint8Array;
+};
+
+/** Options for {@link deserializeCiphertext}. */
+type DeserializeOptions = {
+  /**
+   * Largest accepted maskedPayload length (C_2), including the 4-byte plaintext-length prefix.
+   * Excludes CIPHERTEXT_OVERHEAD. No limit when omitted.
+   *
+   * TODO(spec): the PDF leaves this limit to the caller and fixes no default.
+   */
+  readonly maxMaskedPayloadLength?: number;
+};
+
+/** Byte length of C_1. */
+const MASKED_SEED_SIZE = 16;
+/** Byte length of the C_2 length prefix. */
+const LENGTH_PREFIX_SIZE = 4;
+/** Byte length of π. */
+const PROOF_SIZE = 2 * SCALAR_SIZE;
+/** 132 wire bytes beyond maskedPayload; excludes its inner 4-byte plaintext-length prefix. */
+const CIPHERTEXT_OVERHEAD =
+  G1_SIZE + MASKED_SEED_SIZE + LENGTH_PREFIX_SIZE + PROOF_SIZE;
+
+/** serialize_ciphertext: `R ∥ C_1 ∥ len(C_2) as u32be ∥ C_2 ∥ π`. */
+function serializeCiphertext(ciphertext: Ciphertext): Uint8Array {
+  return concatBytes(
+    ciphertext.commitment,
+    ciphertext.maskedSeed,
+    u32be(ciphertext.maskedPayload.length),
+    ciphertext.maskedPayload,
+    ciphertext.proof,
+  );
+}
+
+/**
+ * deserialize_ciphertext: decodes the wire form, rejecting anything that is not its one canonical
+ * serialization. The point is fully validated here, including subgroup membership, so a decoded
+ * ciphertext is safe to hand to `assertValidCiphertext`. Decoding does not check the client proof
+ * or reject an identity commitment.
+ *
+ * @throws {BtxError} If the wire encoding or masked-payload length is rejected.
+ * @throws {TypeError} If bytes is not a Uint8Array.
+ */
+function deserializeCiphertext(
+  bytes: Uint8Array,
+  options: DeserializeOptions = {},
+): Ciphertext {
+  abytes(bytes);
+  if (bytes.length < CIPHERTEXT_OVERHEAD) {
+    throw new BtxError(
+      "InvalidLength",
+      `shorter than ${CIPHERTEXT_OVERHEAD} bytes`,
+    );
+  }
+  const commitment = Uint8Array.from(bytes.subarray(0, G1_SIZE));
+  decodeG1(commitment);
+  const maskedSeed = Uint8Array.from(
+    bytes.subarray(G1_SIZE, G1_SIZE + MASKED_SEED_SIZE),
+  );
+  const payloadLength = readU32be(bytes, G1_SIZE + MASKED_SEED_SIZE);
+  if (bytes.length !== CIPHERTEXT_OVERHEAD + payloadLength) {
+    throw new BtxError(
+      "InvalidLength",
+      "declared C_2 length disagrees with the buffer",
+    );
+  }
+  if (
+    payloadLength > (options.maxMaskedPayloadLength ?? Number.POSITIVE_INFINITY)
+  ) {
+    throw new BtxError("InvalidLength", "C_2 exceeds the size limit");
+  }
+  const payloadStart = G1_SIZE + MASKED_SEED_SIZE + LENGTH_PREFIX_SIZE;
+  const maskedPayload = Uint8Array.from(
+    bytes.subarray(payloadStart, payloadStart + payloadLength),
+  );
+  const proof = Uint8Array.from(bytes.subarray(payloadStart + payloadLength));
+  decodeScalar(proof.subarray(0, SCALAR_SIZE));
+  decodeScalar(proof.subarray(SCALAR_SIZE));
+  return { commitment, maskedSeed, maskedPayload, proof };
+}
+
+export type { Ciphertext, DeserializeOptions };
+export {
+  CIPHERTEXT_OVERHEAD,
+  deserializeCiphertext,
+  LENGTH_PREFIX_SIZE,
+  MASKED_SEED_SIZE,
+  PROOF_SIZE,
+  serializeCiphertext,
+};

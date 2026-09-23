@@ -9,6 +9,8 @@ This is a bun workspaces monorepo. Packages live under `packages/`.
 | Package | Path |
 | --- | --- |
 | `@monad-crypto/viem` | `packages/viem/` |
+| `@monad-crypto/mpp` | `packages/mpp/` |
+| `@monad-crypto/btx` | `packages/btx/` (private, not published) |
 
 ## Commands
 
@@ -23,6 +25,11 @@ bun run typecheck                     # Type-check all packages
 bun test --cwd packages/viem          # Run tests for @monad-crypto/viem
 bun run --cwd packages/viem build     # Build @monad-crypto/viem
 bun run --cwd packages/viem typecheck # Type-check @monad-crypto/viem
+
+# BTX package (pure, no network)
+bun test --cwd packages/btx --coverage           # Run @monad-crypto/btx tests with coverage
+bun run --cwd packages/btx typecheck             # Type-check @monad-crypto/btx
+bun run packages/btx/tests/fixtures/generate.ts  # Regenerate BTX fixture vectors after a scheme change
 ```
 
 ## Conventions
@@ -32,6 +39,9 @@ bun run --cwd packages/viem typecheck # Type-check @monad-crypto/viem
 - Formatting: 2-space indent, double quotes (enforced by Biome).
 - All imports use `.js` extensions (ESM with `verbatimModuleSyntax`).
 - When adding, removing, or changing actions, contracts, constants, or trust boundaries, update `packages/viem/ARCHITECTURE.md` to reflect the change (e.g. the action inventory table, hardcoded constants table, or security scope).
+- In `packages/btx`, the PDF specification (`encrypted_txs_specs_wip.pdf`, BTX section) is the authority; the Rust and CatBlst implementations are references only. Mark anything the PDF leaves open with a `TODO(spec)` comment and list it in `packages/btx/ARCHITECTURE.md`.
+- Never import `packages/btx/src/testing.ts` from `packages/btx/src/index.ts` or any sender code; it holds the trapdoor and is insecure by design.
+- When a BTX constant, encoding, or hash transcript changes, regenerate `packages/btx/tests/fixtures/vectors.json` with the generator script and update `packages/btx/ARCHITECTURE.md`.
 
 ## Architecture
 
@@ -70,3 +80,17 @@ Every action file (e.g. `packages/viem/src/actions/staking/getValidator.ts`) fol
 ### Tests
 
 Tests run against Monad mainnet RPC (`https://rpc.monad.xyz`) using `bun:test`. Most use `toMatchInlineSnapshot` at a pinned `FORK_BLOCK_NUMBER` for deterministic assertions.
+
+## BTX Architecture
+
+`@monad-crypto/btx` is the sender-side implementation of the BTX threshold encryption scheme for encrypted transactions. It works on `Uint8Array` values only and knows nothing about transactions or RPC.
+
+- `packages/btx/src/curve.ts` wraps `@noble/curves` BLS12-381: canonical G_1, scalar, and G_T codecs.
+- `packages/btx/src/hash.ts` implements the Blake3 primitives of the specification's Appendix E and the proof challenge.
+- `packages/btx/src/ciphertext.ts` defines the `Ciphertext` type and its one canonical wire form.
+- `packages/btx/src/btx.ts` implements padding, the Schnorr proof, `encrypt`, `assertValidCiphertext`, and `verifyDecryption`. Encryption and witness verification take named parameter objects.
+- `packages/btx/src/index.ts` is the complete public surface; `packages/btx/src/testing.ts` is the separate `@monad-crypto/btx/testing` entry with trapdoor-based test keys.
+- `packages/btx/tests/` holds pure `bun:test` suites and the fixture vectors with their generator.
+- `packages/btx/ARCHITECTURE.md` documents constants, encodings, error mapping, dependencies, and specification gaps.
+
+Tests need no network and no anvil. The root `bunfig.toml` enforces 100% line and function coverage.
