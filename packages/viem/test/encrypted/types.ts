@@ -1,15 +1,15 @@
 import {
-  type DecryptionStatus,
-  encryptedWalletActions,
-  sendEncryptedTransaction,
-} from "@monad-crypto/viem/encrypted";
-import {
   createPublicClient,
   createWalletClient,
   custom,
   type Hash,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import {
+  type DecryptionStatus,
+  encryptedWalletActions,
+  sendEncryptedTransaction,
+} from "../../src/encrypted/index.js";
 import { chain } from "./mock.js";
 
 // Compile-only consumer checks. This function is never invoked.

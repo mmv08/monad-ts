@@ -55,7 +55,7 @@ test("ordinary transactions and receipts get viem's own formatting", () => {
   );
 });
 
-test("ETX fields are converted, and missing lifecycle metadata reads as unknown", () => {
+test("ETX transaction and receipt fields are converted", () => {
   const etx = {
     ...rpc,
     type: "0x8",
@@ -77,9 +77,6 @@ test("ETX fields are converted, and missing lifecycle metadata reads as unknown"
     concealedFields: ["to", "data"],
     decryptionStatus: "pending",
   });
-  expect(encryptedFormatters.transaction.format(etx)).toMatchObject({
-    decryptionStatus: "unknown",
-  });
   const etxReceipt = { ...rpcReceipt, type: "0x8", status: "0x0" } as const;
   expect(
     encryptedFormatters.transactionReceipt.format({
@@ -93,7 +90,4 @@ test("ETX fields are converted, and missing lifecycle metadata reads as unknown"
     decryptionStatus: "failed",
     failureReason: "decryptionFailed",
   });
-  expect(
-    encryptedFormatters.transactionReceipt.format(etxReceipt),
-  ).toMatchObject({ decryptionStatus: "unknown" });
 });

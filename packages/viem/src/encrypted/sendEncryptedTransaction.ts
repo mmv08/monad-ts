@@ -16,6 +16,7 @@ import {
 } from "viem";
 import {
   estimateFeesPerGas,
+  getBlock,
   getChainId,
   getTransactionCount,
   sendRawTransaction,
@@ -74,9 +75,11 @@ export async function sendEncryptedTransaction<
   const chainId = client.chain?.id ?? (await getChainId(client));
   let { maxFeePerGas, maxPriorityFeePerGas } = parameters;
   if (maxFeePerGas === undefined || maxPriorityFeePerGas === undefined) {
-    // Viem forwards `request` to the estimator and fee hooks, although the
-    // action's type omits it. It carries public fields only.
+    // As in viem, the estimator and fee hooks get the latest block and the
+    // request, although the action's type omits both. The request carries
+    // public fields only.
     const feeParameters = {
+      block: await getBlock(client, { blockTag: "latest" }),
       chain: client.chain,
       request: { chainId, gas, maxFeePerGas, maxPriorityFeePerGas },
     };
@@ -90,7 +93,6 @@ export async function sendEncryptedTransaction<
         maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
       });
     ({ maxFeePerGas, maxPriorityFeePerGas } = fees);
-    assertRequest({ maxFeePerGas, maxPriorityFeePerGas });
   }
 
   const context = contextProvider
@@ -108,32 +110,32 @@ export async function sendEncryptedTransaction<
   const epoch = BigInt(context.epoch);
   const nonceManager =
     parameters.nonce === undefined ? account.nonceManager : undefined;
-  const nonce =
-    parameters.nonce ??
-    (nonceManager
-      ? await nonceManager.consume({
-          address: account.address,
-          chainId,
-          client,
-        })
-      : await getTransactionCount(client, {
-          address: account.address,
-          blockTag: "pending",
-        }));
-  const envelope: Envelope = {
-    type: "encrypted",
-    chainId,
-    nonce,
-    gas,
-    maxFeePerGas,
-    maxPriorityFeePerGas,
-    ...conceal(payload, encryptedFields),
-    epoch,
-    encryptedFields,
-    ciphertext: "0x",
-  };
-  let serializedTransaction: Hex;
+  let hash: Hash | undefined;
   try {
+    const nonce =
+      parameters.nonce ??
+      (nonceManager
+        ? await nonceManager.consume({
+            address: account.address,
+            chainId,
+            client,
+          })
+        : await getTransactionCount(client, {
+            address: account.address,
+            blockTag: "pending",
+          }));
+    const envelope: Envelope = {
+      type: "encrypted",
+      chainId,
+      nonce,
+      gas,
+      maxFeePerGas,
+      maxPriorityFeePerGas,
+      ...conceal(payload, encryptedFields),
+      epoch,
+      encryptedFields,
+      ciphertext: "0x",
+    };
     envelope.ciphertext = bytesToHex(
       serializeCiphertext(
         encrypt({
@@ -144,50 +146,36 @@ export async function sendEncryptedTransaction<
         }),
       ),
     );
-    serializedTransaction = await account.signTransaction(envelope, {
+    const serializedTransaction = await account.signTransaction(envelope, {
       serializer: serializeTransaction,
     });
+    hash = keccak256(serializedTransaction);
+    await sendRawTransaction(client, { serializedTransaction });
+    return hash;
   } catch (error) {
-    // As in viem, a send that fails before submission hands its nonce back.
+    // As in viem, any failure once a nonce is taken resets the nonce manager,
+    // so the next send reads the pending nonce from the node again.
     nonceManager?.reset({ address: account.address, chainId });
-    throw error;
-  }
-
-  const hash = keccak256(serializedTransaction);
-  let returnedHash: Hash;
-  try {
-    returnedHash = await sendRawTransaction(client, { serializedTransaction });
-  } catch (error) {
+    if (hash === undefined) throw error;
     // Viem wraps every request failure in a BaseError. Only a structured backend
     // reason among its causes proves rejection; any other failure may follow acceptance.
     const cause = error as BaseError;
-    const reason = reasonOf(
-      cause.walk((error) => reasonOf(error) !== undefined),
-    );
-    const options = { hash, cause };
-    if (reason === undefined)
-      throw new EncryptedTransactionError(
-        "unknownOutcome",
-        "Submission outcome is unknown; look up the original hash before taking further action.",
-        options,
-      );
-    throw new EncryptedTransactionError(
-      reason === "expiredEpoch" ? "expiredEpoch" : "rejected",
-      "The backend rejected the encrypted transaction.",
-      options,
-    );
+    throw cause.walk(hasReason)
+      ? new EncryptedTransactionError(
+          "rejected",
+          "The backend rejected the encrypted transaction.",
+          { hash, cause },
+        )
+      : new EncryptedTransactionError(
+          "unknownOutcome",
+          "Submission outcome is unknown; look up the original hash before taking further action.",
+          { hash, cause },
+        );
   }
-  if (returnedHash.toLowerCase() !== hash)
-    throw new EncryptedTransactionError(
-      "unknownOutcome",
-      "RPC returned a different transaction hash.",
-      { hash },
-    );
-  return hash;
 }
 
-function reasonOf(error: unknown): string | undefined {
+function hasReason(error: unknown): boolean {
   const reason = (error as { data?: { reason?: unknown } } | null)?.data
     ?.reason;
-  return typeof reason === "string" ? reason : undefined;
+  return typeof reason === "string";
 }

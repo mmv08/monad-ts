@@ -8,8 +8,9 @@ import type {
   Transaction,
   TransactionReceipt,
 } from "viem";
+import type { fields } from "./codec.js";
 
-export type EncryptedField = "to" | "value" | "data" | "accessList";
+export type EncryptedField = (typeof fields)[number];
 
 /** One key/epoch snapshot. The RPC form carries a hex epoch, as viem's Rpc* types do. */
 export type EncryptionContext<quantity = bigint> =
@@ -56,7 +57,7 @@ export type SendEncryptedTransactionParameters<
 
 export type SendEncryptedTransactionReturnType = Hash;
 
-export type DecryptionStatus = "pending" | "succeeded" | "failed" | "unknown";
+export type DecryptionStatus = "pending" | "succeeded" | "failed";
 
 export type EncryptedTransaction = Omit<
   Extract<Transaction, { type: "eip1559" }>,
@@ -68,11 +69,11 @@ export type EncryptedTransaction = Omit<
   encryptedFields: number;
   ciphertext: Hex;
   concealedFields: readonly EncryptedField[];
-  decryptionStatus: DecryptionStatus;
+  decryptionStatus?: DecryptionStatus;
 };
 
 export type EncryptedTransactionReceipt = Omit<TransactionReceipt, "type"> & {
   type: "encrypted";
-  decryptionStatus: Exclude<DecryptionStatus, "pending">;
+  decryptionStatus?: Exclude<DecryptionStatus, "pending">;
   failureReason?: string;
 };

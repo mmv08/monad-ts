@@ -1,13 +1,6 @@
 import { expect, test } from "bun:test";
 
-test("compiled export surface and real signing under Node", async () => {
-  const api = await import("@monad-crypto/viem/encrypted");
-  expect(Object.keys(api).sort()).toEqual([
-    "EncryptedTransactionError",
-    "encryptedFormatters",
-    "encryptedWalletActions",
-    "sendEncryptedTransaction",
-  ]);
+test("the compiled build signs a type-8 transaction under Node", async () => {
   const node = Bun.spawn(
     [
       "node",

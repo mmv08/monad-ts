@@ -10,11 +10,11 @@ Public runtime exports are `sendEncryptedTransaction`, `encryptedWalletActions`,
 
 ### Data and trust boundaries
 
-1. `sendEncryptedTransaction.ts` requires explicit gas and a local viem account. It fills the chain ID, fees and nonce in the same steps as viem's `prepareTransactionRequest` for local accounts. It cannot call that function, which may send the request to `eth_fillTransaction`. Fee hooks see public fields only.
+1. `sendEncryptedTransaction.ts` requires explicit gas and a local viem account. It fills the chain ID, fees and nonce in the same steps as viem's `prepareTransactionRequest` for local accounts. It cannot call that function, which may send the request to `eth_fillTransaction`. Fee hooks get the latest block, as in viem, and a request with public fields only.
 2. The encryption context comes from the internal `monad_getEncryptionContext` RPC or an injected provider. BTX checks the key; the provider is responsible for its authenticity.
-3. `codec.ts` encodes the selected real fields with Ox RLP, puts placeholders in the envelope, builds the skeleton digest and versioned sender binding, and serializes type 8. Viem's integer encoder enforces the wire widths, and its `serializeAccessList` checks addresses and storage keys.
+3. `codec.ts` encodes the selected real fields with Ox RLP, puts placeholders in the envelope, builds the skeleton digest and versioned sender binding, and serializes type 8. The serializer makes the checks of viem's EIP-1559 serializer: `assertTransactionEIP1559`, `numberToHex` and `serializeAccessList`.
 4. BTX receives owned byte arrays for the plaintext, key and associated data. It supplies padding and secure randomness. No testing entry enters sender code.
-5. The local account signs through viem's custom-serializer hook and is trusted, as in viem. The action makes one `eth_sendRawTransaction` request; failures carry the locally computed hash, with the RPC error as cause.
+5. The local account signs through viem's custom-serializer hook and is trusted, as in viem. The action makes one `eth_sendRawTransaction` request and returns the locally computed hash; failures carry that hash, with the RPC error as cause.
 6. `formatters.ts` plugs transaction, receipt and full-block handling into viem's chain formatters. Like viem's own formatters, it converts fields without validating them. Query views never replace the original signed bytes.
 
 ### Validation
@@ -23,19 +23,19 @@ The ETX code uses what viem, Ox and BTX already check, and adds checks only for 
 
 | Check | Where it happens |
 | --- | --- |
-| Addresses, fee cap size, tip against fee cap | viem `assertRequest`, before and after fee estimation, as in viem |
+| Addresses, fee cap size, tip against fee cap | viem `assertRequest` before any RPC call, as in viem's `sendTransaction` |
 | Fee cap below the estimated tip | `MaxFeePerGasTooLowError`, as in viem's `prepareTransactionRequest` |
-| Integer widths | viem `toHex(value, { size })` in the encoder, at the PDF's widths |
+| Chain ID, recipient and fee caps of the signed fields | viem `assertTransactionEIP1559` in the serializer, as in viem's EIP-1559 serializer |
+| Integers | viem `numberToHex`, as in viem's serializers; the node enforces the PDF's widths |
 | Access-list addresses and storage keys | viem `serializeAccessList` |
 | Key, padding and ciphertext | BTX |
 | An omitted `to` | ETX: `to: null` is the only way to request contract creation |
 | An empty or unknown `encryptedFields` | ETX: it would otherwise send the payload in the clear |
 | Encryption available for the epoch | ETX |
-| Returned hash equals the local hash | ETX: the signed envelope is the transaction's identity |
 
-As in viem, RPC responses and hook results are not runtime-validated, reads follow the transport's retry setting, and a failure before submission resets a viem nonce manager. The action does not wrap errors in viem's `TransactionExecutionError`, because that error prints the request's `to`, `value` and `data`.
+As in viem, RPC responses and hook results are not runtime-validated, reads follow the transport's retry setting, and any failure after the action takes a managed nonce resets the nonce manager. The action does not wrap errors in viem's `TransactionExecutionError`, because that error prints the request's `to`, `value` and `data`.
 
-Default preparation never simulates, estimates gas, creates access lists, or calls `eth_fillTransaction`. There is no plaintext fallback or routine logging. Viem 2.56.8 forwards the fee estimator's `request` argument at runtime although its public type omits it; a regression test covers that dependency and the fee-hook privacy boundary.
+Default preparation never simulates, estimates gas, creates access lists, or calls `eth_fillTransaction`. There is no plaintext fallback or routine logging. Viem 2.56.8 forwards the fee estimator's `block` and `request` arguments at runtime although its public type omits them; a regression test covers that dependency and the fee-hook privacy boundary.
 
 Mock and example chains set `supportsTransactionReplacementDetection: false`, so receipt waits do not judge replacements from concealed fields. This is a chain-wide default; callers can override it per wait.
 
@@ -43,9 +43,9 @@ Mock and example chains set `supportsTransactionReplacementDetection: false`, so
 
 Runtime dependencies are private `@monad-crypto/btx` and direct `ox@0.14.45`, with viem `>=2.56.8 <3` as a peer. The package is private while BTX is. Sender code adds no private-key storage, filesystem access, or environment access.
 
-`test/encrypted` holds offline codec, lifecycle, privacy, and compile-only consumer tests. `mock.ts` owns envelope and payload decoding and admission. It uses the separate BTX testing entry and one trapdoor, gives every rejection a structured reason, and scripts receipts without executing the EVM. `vector.json` records deterministic regression bytes and hashes; only `fixtures.ts` imports BTX's internal fixed-randomness helper. Examples and tests stay outside the sender build.
+`test/encrypted` holds offline codec, lifecycle, privacy, and compile-only consumer tests; `test:encrypted` builds first because one test runs the compiled output under Node. `mock.ts` owns envelope and payload decoding and admission. It decodes as strictly as viem's parser (every field, a parity of 0 or 1), uses the separate BTX testing entry and one trapdoor, gives every rejection a structured reason, and scripts receipts without executing the EVM. Its transport keeps viem's default retries, so the one-send test checks the action itself. `vector.json` records deterministic regression bytes and hashes; `fixtures.ts` takes all of BTX from source, including the internal fixed-randomness helper. No automated test signs in a browser; the HTTP example is a manual check. Examples and tests stay outside the sender build.
 
-`TODO(spec)`: the codec uses typed Ethereum RLP, the ordinary three-field signature suffix, and the same unsigned encoding with an empty ciphertext for the skeleton. The PDF fixes the fields, order and binding but leaves those byte conventions partly implicit. The total size limit is chain policy; only the mock enforces one (128 KiB). Tests establish regression behavior, not node interoperability.
+`TODO(spec)`: the codec uses typed Ethereum RLP, the ordinary three-field signature suffix, and the same unsigned encoding with an empty ciphertext for the skeleton. The PDF fixes the fields, order and binding but leaves those byte conventions partly implicit. The total size limit is chain policy, and nothing here enforces one. Tests establish regression behavior, not node interoperability.
 
 ## 1. Security Scope Summary (root entry)
 

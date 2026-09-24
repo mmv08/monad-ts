@@ -39,7 +39,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "test": "bun test",
-    "test:encrypted": "bun test test/encrypted",
+    "test:encrypted": "bun run build && bun test test/encrypted",
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {

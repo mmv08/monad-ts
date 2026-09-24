@@ -1,9 +1,10 @@
-import { serializeCiphertext } from "@monad-crypto/btx";
-import { createTestKey } from "@monad-crypto/btx/testing";
 import { bytesToHex, hexToBytes, keccak256 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-// Deterministic randomness belongs only to fixture tooling, never the package entry point.
+// All of BTX comes from one copy, its source. Deterministic randomness belongs
+// only to fixture tooling, never the package entry point.
 import { encryptWithRandom } from "../../../btx/src/btx.js";
+import { serializeCiphertext } from "../../../btx/src/index.js";
+import { createTestKey } from "../../../btx/src/testing.js";
 import {
   associatedData,
   conceal,

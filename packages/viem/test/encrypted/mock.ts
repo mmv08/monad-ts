@@ -1,20 +1,18 @@
 import { admitCiphertext } from "@monad-crypto/btx";
 import { createTestKey } from "@monad-crypto/btx/testing";
+import * as AccessList from "ox/AccessList";
+import * as Rlp from "ox/Rlp";
+import * as Secp256k1 from "ox/Secp256k1";
+import * as Signature from "ox/Signature";
 import {
-  type AccessList,
   type Address,
   bytesToHex,
   custom,
   defineChain,
-  fromRlp,
   type Hex,
   hexToBigInt,
   hexToBytes,
   keccak256,
-  pad,
-  recoverAddress,
-  type Signature,
-  size,
   toHex,
 } from "viem";
 import {
@@ -35,14 +33,11 @@ export const chain = defineChain({
   supportsTransactionReplacementDetection: false,
 });
 
-// TODO(spec): the PDF leaves the total transaction limit to chain policy.
-// This is the mock's own limit, not a Monad claim.
-const MAX_TRANSACTION_BYTES = 128 * 1024;
 const zeroHash = `0x${"00".repeat(32)}` as const;
 const bloom = `0x${"00".repeat(256)}` as const;
 type Entry = {
   envelope: Envelope;
-  signature: Signature;
+  signature: Signature.Signature;
   sender: Address;
   ad: Hex;
   status: "pending" | "succeeded" | "failed";
@@ -52,7 +47,7 @@ type Entry = {
 };
 
 /** A rejection in the ETX RPC's shape: -32000 with a machine-readable reason. */
-export function rpcError(reason: string) {
+function rpcError(reason: string) {
   return Object.assign(new Error("ETX rejected"), {
     code: -32000,
     data: { reason },
@@ -60,19 +55,18 @@ export function rpcError(reason: string) {
 }
 
 // Received-byte decoding belongs to this test backend, not the sender library.
-// Like viem's parseTransaction, it trusts the RLP shape; admission checks the rest.
+// Like viem's parseTransaction, it requires every field and a parity of 0 or 1;
+// admission checks the rest.
 const quantity = (value: Hex) => (value === "0x" ? 0n : hexToBigInt(value));
 const recipient = (value: Hex) => (value === "0x" ? null : value);
-const accessList = (value: unknown): AccessList =>
-  (value as [Address, Hex[]][]).map(([address, storageKeys]) => ({
-    address,
-    storageKeys,
-  }));
+const accessList = (value: unknown) =>
+  AccessList.fromTupleList(value as AccessList.Tuple);
 
 async function parseEnvelope(raw: Hex) {
   try {
-    if (!raw.startsWith("0x08") || size(raw) > MAX_TRANSACTION_BYTES)
-      throw new Error("Not a type-8 envelope");
+    if (!raw.startsWith("0x08")) throw new Error("Not a type-8 envelope");
+    const values = Rlp.toHex(`0x${raw.slice(4)}`) as Hex[];
+    if (values.length !== 15) throw new Error("Wrong field count");
     const [
       chainId,
       nonce,
@@ -89,7 +83,7 @@ async function parseEnvelope(raw: Hex) {
       yParity,
       r,
       s,
-    ] = fromRlp(`0x${raw.slice(4)}`) as Hex[];
+    ] = values;
     const envelope: Envelope = {
       type: "encrypted",
       chainId: Number(quantity(chainId)),
@@ -105,13 +99,9 @@ async function parseEnvelope(raw: Hex) {
       encryptedFields: Number(quantity(mask)),
       ciphertext,
     };
-    const signature = {
-      r: pad(r),
-      s: pad(s),
-      yParity: yParity === "0x" ? 0 : 1,
-    };
-    const sender = await recoverAddress({
-      hash: keccak256(serializeEnvelope(envelope)),
+    const signature = Signature.fromTuple([yParity, r, s]);
+    const sender = Secp256k1.recoverAddress({
+      payload: keccak256(serializeEnvelope(envelope)),
       signature,
     });
     return { envelope, signature, sender };
@@ -120,22 +110,32 @@ async function parseEnvelope(raw: Hex) {
   }
 }
 
-function decodePayload(plaintext: Hex, envelope: Envelope): Payload {
-  const values = fromRlp(plaintext) as Hex[];
-  const payload: Payload = {
-    to: envelope.to,
-    value: envelope.value,
-    data: envelope.data,
-    accessList: envelope.accessList,
-  };
-  selectedFields(envelope.encryptedFields).forEach((field, index) => {
-    const value = values[index];
-    if (field === "to") payload.to = recipient(value);
-    else if (field === "value") payload.value = quantity(value);
-    else if (field === "data") payload.data = value;
-    else payload.accessList = accessList(value);
-  });
-  return payload;
+/** Restores every selected field, or none when the payload does not match the mask. */
+function decodePayload(
+  plaintext: Hex,
+  envelope: Envelope,
+): Payload | undefined {
+  try {
+    const values = Rlp.toHex(plaintext);
+    const selected = selectedFields(envelope.encryptedFields);
+    if (!Array.isArray(values) || values.length !== selected.length) return;
+    const payload: Payload = {
+      to: envelope.to,
+      value: envelope.value,
+      data: envelope.data,
+      accessList: envelope.accessList,
+    };
+    selected.forEach((field, index) => {
+      const value = values[index] as Hex;
+      if (field === "to") payload.to = recipient(value);
+      else if (field === "value") payload.value = quantity(value);
+      else if (field === "data") payload.data = value;
+      else payload.accessList = accessList(value);
+    });
+    return payload;
+  } catch {
+    return;
+  }
 }
 
 /** Test-only, single-trapdoor backend. Receipts are scripted, never EVM execution. */
@@ -148,9 +148,7 @@ export function createMock() {
     epoch: 1n,
     available: true,
     timeoutAfterAccept: false,
-    wrongHash: false,
     calls: [] as { method: string; params?: unknown }[],
-    dropped: new Map<Hex, string>(),
     async request({
       method,
       params,
@@ -210,7 +208,7 @@ export function createMock() {
             });
           if (mock.timeoutAfterAccept)
             throw new Error("Connection lost after acceptance");
-          return mock.wrongHash ? zeroHash : hash;
+          return hash;
         }
         case "eth_getTransactionByHash":
           return mock.transaction(args[0]);
@@ -260,14 +258,11 @@ export function createMock() {
         epoch: toHex(tx.epoch),
         encryptedFields: toHex(tx.encryptedFields),
         ciphertext: tx.ciphertext,
-        // The PDF requires responses to mark ETX and name the concealed fields.
-        encrypted: true,
-        concealedFields: selectedFields(tx.encryptedFields),
         decryptionStatus: entry.status,
-        r: signature.r,
-        s: signature.s,
-        yParity: toHex(signature.yParity ?? 0),
-        v: toHex(signature.yParity ?? 0),
+        r: toHex(signature.r, { size: 32 }),
+        s: toHex(signature.s, { size: 32 }),
+        yParity: toHex(signature.yParity),
+        v: toHex(signature.yParity),
         blockHash: entry.block === undefined ? null : zeroHash,
         blockNumber: entry.block === undefined ? null : toHex(entry.block),
         transactionIndex: entry.block === undefined ? null : "0x0",
@@ -301,29 +296,18 @@ export function createMock() {
       const entry = entries.get(hash);
       if (!entry || entry.block !== undefined)
         throw new Error("Expected a pending transaction");
-      if (!mock.available || entry.envelope.epoch !== mock.epoch) {
-        entries.delete(hash);
-        mock.dropped.set(hash, "expiredEpoch");
-        return;
-      }
       const decrypted = mock.key.decrypt(
         hexToBytes(entry.envelope.ciphertext),
         hexToBytes(entry.ad),
       );
-      if (decrypted) {
-        entry.payload = decodePayload(
-          bytesToHex(decrypted.plaintext),
-          entry.envelope,
-        );
-        entry.status = "succeeded";
-        entry.failureReason = failureReason;
-      } else {
-        entry.status = "failed";
-        entry.failureReason = "decryptionFailed";
-      }
+      entry.payload = decrypted
+        ? decodePayload(bytesToHex(decrypted.plaintext), entry.envelope)
+        : undefined;
+      entry.status = entry.payload ? "succeeded" : "failed";
+      entry.failureReason = entry.payload ? failureReason : "decryptionFailed";
       entry.block = ++height;
       nonces.set(entry.sender.toLowerCase(), entry.envelope.nonce + 1);
     },
   };
-  return Object.assign(mock, { transport: custom(mock, { retryCount: 0 }) });
+  return Object.assign(mock, { transport: custom(mock) });
 }

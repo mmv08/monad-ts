@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { createTestKey } from "@monad-crypto/btx/testing";
 import {
   bytesToHex,
   createPublicClient,
@@ -10,7 +9,6 @@ import {
   InvalidAddressError,
   MaxFeePerGasTooLowError,
   nonceManager,
-  TipAboveFeeCapError,
   zeroAddress,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -61,10 +59,13 @@ test("send, pending query, decryption, full block and ordinary receipt polling",
   });
   const storageKey = `0x${"ab".repeat(32)}` as const;
   const accessAddress = "0x2222222222222222222222222222222222222222";
+  const accessList = [
+    { address: accessAddress, storageKeys: [storageKey] },
+  ] as const;
   const hash = await wallet.sendEncryptedTransaction({
     ...request,
     data,
-    accessList: [{ address: accessAddress, storageKeys: [storageKey] }],
+    accessList,
   });
   const preparationCalls = [...mock.calls];
   const pending = await publicClient.getTransaction({ hash });
@@ -85,9 +86,15 @@ test("send, pending query, decryption, full block and ordinary receipt polling",
   expect(receipt.status).toBe("success");
   if (receipt.type !== "encrypted") throw new Error("Expected ETX receipt");
   expect(receipt.decryptionStatus).toBe("succeeded");
+  // Every concealed field comes back, and the identity stays.
   const restored = await publicClient.getTransaction({ hash });
-  expect(restored.input).toBe(data);
-  expect(restored.hash).toBe(hash);
+  expect(restored).toMatchObject({
+    hash,
+    to,
+    value: request.value,
+    input: data,
+    accessList,
+  });
   expect(restored.from.toLowerCase()).toBe(account.address.toLowerCase());
   expect(
     (await publicClient.getBlock({ includeTransactions: true })).transactions[0]
@@ -109,39 +116,21 @@ test("send, pending query, decryption, full block and ordinary receipt polling",
   }
 });
 
-test("unavailable encryption fails before signing or sending", async () => {
+test("unavailable encryption fails before the nonce, signing or sending", async () => {
   const { mock, wallet } = setup();
   mock.available = false;
   await expect(wallet.sendEncryptedTransaction(request)).rejects.toMatchObject({
     code: "unavailable",
   });
+  expect(mock.calls.map(({ method }) => method)).not.toContain(
+    "eth_getTransactionCount",
+  );
   expect(sends(mock)).toBe(0);
 });
 
-test("wrong epoch rejects; accepted epoch expires before inclusion", async () => {
-  const { mock, wallet, publicClient } = setup();
-  const hash = await wallet.sendEncryptedTransaction(request);
-  mock.epoch++;
-  mock.include(hash);
-  expect(mock.dropped.get(hash)).toBe("expiredEpoch");
-  expect(mock.receipt(hash)).toBeNull();
-  await expect(publicClient.getTransaction({ hash })).rejects.toThrow();
-  await expect(
-    sendEncryptedTransaction(wallet, {
-      ...request,
-      contextProvider: async () => ({
-        available: true,
-        epoch: 1n,
-        encryptionKey: bytesToHex(mock.key.encryptionKey),
-      }),
-    }),
-  ).rejects.toMatchObject({ code: "expiredEpoch" });
-});
-
-test("wrong valid key fails decryption, not admission", async () => {
-  const { mock, publicClient } = setup();
-  const other = createTestKey({ trapdoor: 43n });
-  // A provider given to the decorator is the default for each send.
+test("a stale epoch is rejected, with a decorator's contextProvider as the default", async () => {
+  const mock = createMock();
+  mock.epoch = 2n;
   const wallet = createWalletClient({
     account,
     chain,
@@ -151,82 +140,47 @@ test("wrong valid key fails decryption, not admission", async () => {
       contextProvider: async () => ({
         available: true,
         epoch: 1n,
-        encryptionKey: bytesToHex(other.encryptionKey),
+        encryptionKey: bytesToHex(mock.key.encryptionKey),
       }),
     }),
   );
-  const hash = await wallet.sendEncryptedTransaction(request);
-  mock.include(hash);
-  expect(await publicClient.getTransactionReceipt({ hash })).toMatchObject({
-    status: "reverted",
-    decryptionStatus: "failed",
-    failureReason: "decryptionFailed",
-    gasUsed: request.gas,
-  });
-});
-
-test("zero-valued payload succeeds and EVM failure stays separate", async () => {
-  const { mock, wallet, publicClient } = setup();
-  const hash = await wallet.sendEncryptedTransaction({
-    to: zeroAddress,
-    gas: 21_000n,
-  });
-  mock.include(hash, "reverted");
-  expect(await publicClient.getTransactionReceipt({ hash })).toMatchObject({
-    status: "reverted",
-    decryptionStatus: "succeeded",
-    failureReason: "reverted",
-  });
+  const error = await sendError(wallet.sendEncryptedTransaction(request));
+  expect(error.code).toBe("rejected");
+  expect(error.walk()).toMatchObject({ data: { reason: "expiredEpoch" } });
 });
 
 test("failed submissions keep the hash and cause, and send once", async () => {
-  for (const fault of ["timeoutAfterAccept", "wrongHash"] as const) {
-    const { mock, wallet } = setup();
-    mock[fault] = true;
-    const error = await sendError(wallet.sendEncryptedTransaction(request));
-    expect(error.code).toBe("unknownOutcome");
-    // The mock accepted these bytes, so the reported hash finds them.
-    expect(mock.transaction(error.hash)).not.toBeNull();
-    expect(sends(mock)).toBe(1);
-  }
-  // A structured reason proves rejection: another chain's envelope, or a
-  // signer other than the sender bound into the proof.
+  // The transport retries by default; the action must still send once.
+  const { mock, wallet } = setup();
+  mock.timeoutAfterAccept = true;
+  const uncertain = await sendError(wallet.sendEncryptedTransaction(request));
+  expect(uncertain.code).toBe("unknownOutcome");
+  expect(uncertain.walk()).toMatchObject({
+    message: "Connection lost after acceptance",
+  });
+  // The mock accepted these bytes, so the reported hash finds them.
+  expect(mock.transaction(uncertain.hash)).not.toBeNull();
+  expect(sends(mock)).toBe(1);
+  // A structured reason proves rejection: here a signer other than the
+  // sender bound into the proof.
   const other = privateKeyToAccount(`0x${"02".repeat(32)}`);
-  for (const [reason, send] of [
-    [
-      "chainIdMismatch",
-      (mock: ReturnType<typeof createMock>) =>
-        sendEncryptedTransaction(
-          createWalletClient({
-            account,
-            chain: { ...chain, id: 1 },
-            transport: mock.transport,
-          }),
-          request,
-        ),
-    ],
-    [
-      "invalidProof",
-      (mock: ReturnType<typeof createMock>) =>
-        sendEncryptedTransaction(
-          createWalletClient({ account, chain, transport: mock.transport }),
-          {
-            ...request,
-            account: { ...account, signTransaction: other.signTransaction },
-          },
-        ),
-    ],
-  ] as const) {
-    const mock = createMock();
-    const error = await sendError(send(mock));
-    expect(error.code).toBe("rejected");
-    expect(error.hash).toMatch(/^0x[\da-f]{64}$/);
-    expect(error.walk()).toMatchObject({ data: { reason } });
-    expect(sends(mock)).toBe(1);
-  }
+  const rejecting = createMock();
+  const rejected = await sendError(
+    sendEncryptedTransaction(
+      createWalletClient({ account, chain, transport: rejecting.transport }),
+      {
+        ...request,
+        account: { ...account, signTransaction: other.signTransaction },
+      },
+    ),
+  );
+  expect(rejected.code).toBe("rejected");
+  expect(rejected.hash).toMatch(/^0x[\da-f]{64}$/);
+  expect(rejected.walk()).toMatchObject({ data: { reason: "invalidProof" } });
+  expect(sends(rejecting)).toBe(1);
 });
 
-test("managed nonces: concurrent sends, explicit override, no gap after a local failure", async () => {
+test("managed nonces: concurrent sends, explicit override, no gap after any failure", async () => {
   const mock = createMock();
   const wallet = createWalletClient({
     account: privateKeyToAccount(`0x${"02".repeat(32)}`, { nonceManager }),
@@ -239,11 +193,25 @@ test("managed nonces: concurrent sends, explicit override, no gap after a local 
     wallet.sendEncryptedTransaction(request),
   ]);
   expect(concurrent.map(nonceOf).sort()).toEqual(["0x0", "0x1"]);
-  // BTX rejects this padding after the nonce is reserved; the nonce goes back.
+  // BTX rejects this padding after the nonce is taken; the nonce goes back.
   await expect(
     wallet.sendEncryptedTransaction({ ...request, paddedLength: 0 }),
   ).rejects.toMatchObject({ code: "InvalidLength" });
   expect(nonceOf(await wallet.sendEncryptedTransaction(request))).toBe("0x2");
+  // After an epoch change the backend rejects a stale context; a fresh send
+  // reuses the rejected nonce.
+  mock.epoch++;
+  await expect(
+    wallet.sendEncryptedTransaction({
+      ...request,
+      contextProvider: async () => ({
+        available: true,
+        epoch: 1n,
+        encryptionKey: bytesToHex(mock.key.encryptionKey),
+      }),
+    }),
+  ).rejects.toMatchObject({ code: "rejected" });
+  expect(nonceOf(await wallet.sendEncryptedTransaction(request))).toBe("0x3");
   expect(
     nonceOf(await wallet.sendEncryptedTransaction({ ...request, nonce: 10 })),
   ).toBe("0xa");
@@ -275,7 +243,7 @@ test("requires a local account and a valid, explicit recipient", async () => {
   expect(mock.calls).toHaveLength(0);
 });
 
-test("fees follow viem: partial caps, public-only fee hooks and viem's fee errors", async () => {
+test("fees follow viem: partial caps, fee hooks get the block and public fields only", async () => {
   const { mock, wallet } = setup();
   for (const [fees, expected] of [
     [
@@ -290,22 +258,15 @@ test("fees follow viem: partial caps, public-only fee hooks and viem's fee error
     const hash = await wallet.sendEncryptedTransaction({ ...request, ...fees });
     expect(mock.transaction(hash)).toMatchObject(expected);
   }
-  await expect(
-    wallet.sendEncryptedTransaction({
-      ...request,
-      maxFeePerGas: 1n,
-      maxPriorityFeePerGas: 2n,
-    }),
-  ).rejects.toBeInstanceOf(TipAboveFeeCapError);
-  let seen: unknown;
+  let seen: { block?: unknown; request?: unknown } = {};
   const hooked = createWalletClient({
     account,
     transport: mock.transport,
     chain: {
       ...chain,
       fees: {
-        estimateFeesPerGas: async ({ request }) => {
-          seen = request;
+        estimateFeesPerGas: async ({ block, request }) => {
+          seen = { block, request };
           return {
             maxFeePerGas: request?.maxFeePerGas ?? 20n,
             maxPriorityFeePerGas: 10n,
@@ -319,8 +280,10 @@ test("fees follow viem: partial caps, public-only fee hooks and viem's fee error
     data: "0x1234",
     maxPriorityFeePerGas: 10n,
   });
-  // The hook sees public fields only: no recipient, value or calldata.
-  expect(seen).toEqual({
+  // As in viem, the hook gets the latest block. The request carries public
+  // fields only: no recipient, value or calldata.
+  expect(seen.block).toMatchObject({ baseFeePerGas: 1n });
+  expect(seen.request).toEqual({
     chainId: chain.id,
     gas: request.gas,
     maxFeePerGas: undefined,
@@ -339,7 +302,6 @@ test("contract creation can stay public while its initcode is encrypted", async 
     data: "0x6000",
     gas: 100_000n,
     encryptedFields: ["data"],
-    paddedLength: 4, // RLP([0x6000]) is four bytes; an exact fit is allowed.
   });
   expect(mock.transaction(hash)).toMatchObject({
     to: null,

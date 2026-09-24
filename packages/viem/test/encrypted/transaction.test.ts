@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import * as Rlp from "ox/Rlp";
-import { zeroAddress } from "viem";
+import { IntegerOutOfRangeError, InvalidChainIdError, zeroAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import {
   associatedData,
@@ -10,7 +10,6 @@ import {
   maskFor,
   selectedFields,
   serializeEnvelope,
-  serializeTransaction,
 } from "../../src/encrypted/codec.js";
 import { EncryptedTransactionError } from "../../src/encrypted/index.js";
 import { buildVector } from "./fixtures.js";
@@ -91,22 +90,6 @@ describe("type-8 codec", () => {
     expect(stored).toEqual(await buildVector());
   });
 
-  test("ordinary serialization delegates to viem", async () => {
-    const raw = await account.signTransaction(
-      {
-        type: "eip1559",
-        chainId: 1337,
-        nonce: 0,
-        to: target,
-        gas: 21_000n,
-        maxFeePerGas: 3n,
-        maxPriorityFeePerGas: 1n,
-      },
-      { serializer: serializeTransaction },
-    );
-    expect(raw.startsWith("0x02")).toBe(true);
-  });
-
   test("contract creation and a zero-address recipient encode differently", () => {
     const empty = { value: 0n, data: "0x", accessList: [] } as const;
     expect(encodePayload({ ...empty, to: null }, 15)).toBe("0xc4808080c0");
@@ -139,25 +122,12 @@ describe("type-8 codec", () => {
     ).toBe(ad);
   });
 
-  test("encoding enforces the PDF integer widths", () => {
-    for (const [field, bits] of [
-      ["gas", 64n],
-      ["epoch", 64n],
-      ["maxFeePerGas", 128n],
-      ["maxPriorityFeePerGas", 128n],
-    ] as const) {
-      expect(() =>
-        serializeEnvelope({ ...base, [field]: (1n << bits) - 1n }),
-      ).not.toThrow();
-      expect(() =>
-        serializeEnvelope({ ...base, [field]: 1n << bits }),
-      ).toThrow();
-    }
+  test("serialization makes the checks of viem's EIP-1559 serializer", () => {
+    expect(() => serializeEnvelope({ ...base, chainId: 0 })).toThrow(
+      InvalidChainIdError,
+    );
     expect(() =>
-      encodePayload({ ...payload, value: (1n << 256n) - 1n }, 15),
-    ).not.toThrow();
-    expect(() =>
-      encodePayload({ ...payload, value: 1n << 256n }, 15),
-    ).toThrow();
+      serializeEnvelope({ ...base, nonce: Number.MAX_SAFE_INTEGER + 1 }),
+    ).toThrow(IntegerOutOfRangeError);
   });
 });

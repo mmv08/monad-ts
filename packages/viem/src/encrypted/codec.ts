@@ -3,15 +3,15 @@ import * as SignatureEncoding from "ox/Signature";
 import {
   type AccessList,
   type Address,
+  assertTransactionEIP1559,
   concatHex,
   type Hex,
   keccak256,
+  numberToHex,
   type Signature,
   serializeAccessList,
   serializeTransaction as serializeViemTransaction,
   type TransactionSerializable,
-  toHex,
-  trim,
   zeroAddress,
 } from "viem";
 import { EncryptedTransactionError } from "./errors.js";
@@ -41,15 +41,14 @@ export type Envelope = Payload & {
 type RlpValue = Hex | readonly RlpValue[];
 
 export function maskFor(selection: readonly EncryptedField[] = fields): number {
-  let mask = 0;
-  for (const field of selection) mask |= 1 << fields.indexOf(field);
-  // An unknown name shifts by -1, which sets the sign bit. Both it and an
-  // empty selection would otherwise send the payload in the clear.
-  if (mask <= 0)
+  // An empty selection or an unknown name would send the payload in the clear.
+  if (!selection.length || selection.some((field) => !fields.includes(field)))
     throw new EncryptedTransactionError(
       "invalidInput",
       "Encrypt one or more of: to, value, data, accessList.",
     );
+  let mask = 0;
+  for (const field of selection) mask |= 1 << fields.indexOf(field);
   return mask;
 }
 
@@ -57,16 +56,15 @@ export function selectedFields(mask: number): EncryptedField[] {
   return fields.filter((_, index) => mask & (1 << index));
 }
 
-function integer(value: bigint | number, size: number): Hex {
-  // Viem enforces the unsigned width; RLP uses minimal bytes and empty for zero.
-  const encoded = trim(toHex(value, { size }));
-  return encoded === "0x00" ? "0x" : encoded;
+// As in viem's serializers: minimal bytes, empty for zero, and viem's own range check.
+function quantity(value: bigint | number): Hex {
+  return value ? numberToHex(value) : "0x";
 }
 
 function payloadValues(payload: Payload): RlpValue[] {
   return [
     payload.to ?? "0x",
-    integer(payload.value, 32),
+    quantity(payload.value),
     payload.data,
     serializeAccessList(payload.accessList),
   ];
@@ -89,14 +87,14 @@ export function conceal(payload: Payload, mask: number): Payload {
 
 function envelopeValues(envelope: Envelope): RlpValue[] {
   return [
-    integer(envelope.chainId, 8),
-    integer(envelope.nonce, 8),
-    integer(envelope.maxPriorityFeePerGas, 16),
-    integer(envelope.maxFeePerGas, 16),
-    integer(envelope.gas, 8),
+    quantity(envelope.chainId),
+    quantity(envelope.nonce),
+    quantity(envelope.maxPriorityFeePerGas),
+    quantity(envelope.maxFeePerGas),
+    quantity(envelope.gas),
     ...payloadValues(envelope),
-    integer(envelope.epoch, 8),
-    integer(envelope.encryptedFields, 1),
+    quantity(envelope.epoch),
+    quantity(envelope.encryptedFields),
     envelope.ciphertext,
   ];
 }
@@ -106,6 +104,8 @@ export function serializeEnvelope(
   envelope: Envelope,
   signature?: Signature,
 ): Hex {
+  // Viem's EIP-1559 serializer makes this check; type 8 shares those fields.
+  assertTransactionEIP1559({ ...envelope, type: "eip1559" });
   return concatHex([
     "0x08",
     Rlp.fromHex([

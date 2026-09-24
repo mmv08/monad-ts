@@ -9,13 +9,12 @@ From the `monad-ts` root:
 ```sh
 bun install
 bun run --cwd packages/btx build
-bun run --cwd packages/viem build
 bun run --cwd packages/viem typecheck
 bun run --cwd packages/viem test:encrypted
 bun run packages/viem/examples/encrypted.ts
 ```
 
-The example sends a transfer and an ABI-encoded contract call to the in-process mock. The mock verifies and decrypts the signed bytes, then returns scripted receipts. It does not execute the EVM or provide threshold privacy.
+`test:encrypted` builds the package first, because one test runs the compiled output under Node. The example sends a transfer and an ABI-encoded contract call to the in-process mock. The mock verifies and decrypts the signed bytes, then returns scripted receipts. It does not execute the EVM or provide threshold privacy.
 
 For browser signing over HTTP:
 
@@ -66,7 +65,7 @@ if (receipt.type === "encrypted") {
 - `value`, `data`, and `accessList` default to zero, empty bytes, and an empty list.
 - All four fields are encrypted by default. `encryptedFields: ["to", "data"]` picks a nonempty subset. A public access list can reveal the target.
 - `paddedLength` overrides BTX's default padding, which rounds up to a multiple of 256 bytes, with 256 as the minimum. It excludes the four-byte length prefix, and an exact fit is allowed.
-- The nonce and fee caps may be supplied. Otherwise the action fills them as viem's `prepareTransactionRequest` does for local accounts, and fee hooks see public fields only. The chain ID comes from the client's chain, or from the node when the client has none.
+- The nonce and fee caps may be supplied. Otherwise the action fills them as viem's `prepareTransactionRequest` does for local accounts: fee hooks get the latest block, and the request they see carries public fields only. The chain ID comes from the client's chain, or from the node when the client has none.
 - The action never estimates gas. Estimate on a node you trust with the plaintext, then pass `gas`.
 - Local private-key and HD accounts work, including viem nonce managers. JSON-RPC wallets do not. As in viem, the action trusts what a local account signs.
 - The formatters handle ordinary transactions and ETX. A chain with its own response formatters must combine them with these by hand.
@@ -77,27 +76,27 @@ By default the action reads the **internal** `monad_getEncryptionContext` RPC. I
 
 Pass `contextProvider: async ({ chainId, account }) => context` to the action, or to `encryptedWalletActions` as a default, for fixtures or another key source. It must return one coherent snapshot, and the caller must trust its source. When encryption is unavailable, the action fails before encrypting.
 
-Validation stays where viem and BTX already do it: `assertRequest` checks addresses and fee caps, the encoder checks integer widths, and BTX checks the key and padding. Their errors reach the caller unchanged. The formatters convert ETX fields without validating them, as viem's formatters do.
+Validation stays where viem and BTX already do it. `assertRequest` checks addresses and fee caps before any RPC call. The type-8 serializer makes the checks of viem's EIP-1559 serializer: `assertTransactionEIP1559` for the chain ID, recipient and fee caps, `numberToHex` for integers, and `serializeAccessList` for the access list. Like viem for EIP-1559, it leaves the PDF's integer widths to the node. BTX checks the key and padding. Their errors reach the caller unchanged. The formatters convert ETX fields without validating them, as viem's formatters do.
 
 `EncryptedTransactionError` covers the cases viem has no error for. Inspect `code`:
 
 - `invalidInput`: `encryptedFields` is empty or names an unknown field.
 - `unsupportedSigner`: the account is missing or not local.
 - `unavailable`: the context has no key for the active epoch.
-- `rejected` or `expiredEpoch`: the backend's error carried a structured `data.reason`.
-- `unknownOutcome`: the send failed without a reason, or the node returned another hash. The transaction may still be pending, so look up `hash` before acting.
+- `rejected`: the backend's error carried a structured `data.reason`, such as `expiredEpoch`. `error.walk()` reaches it.
+- `unknownOutcome`: the send failed without a reason. The transaction may still be pending, so look up `hash` before acting.
 
-Submission failures carry the local `hash`, and the original error as `cause`. The action sends once and never re-encrypts or signs again; viem's `sendRawTransaction` already disables retries, and reads follow the transport's own retry setting. When a send fails before submission, the action hands a managed nonce back, as viem does. A null lookup does not prove that the node rejected a transaction.
+On success the action returns the hash of the signed bytes; it does not compare it with the node's reply. Submission failures carry that `hash`, and the original error as `cause`. The action sends once and never re-encrypts or signs again; viem's `sendRawTransaction` already disables retries, and reads follow the transport's own retry setting. As in viem, any failure after the action takes a managed nonce resets the nonce manager, so the next send reads the pending nonce from the node. A null lookup does not prove that the node rejected a transaction.
 
 ## Identity and limits
 
 Transactions use type `0x08`, the PDF's four-field mask, the version-1 sender/skeleton binding, BTX encryption, and a secp256k1 signature over the full typed envelope. The codec uses Ethereum-style typed RLP with a `yParity, r, s` suffix. The PDF does not spell out every RLP convention, so the committed vector records this reading for later comparison with a node.
 
-Pending queries show placeholders and name the concealed fields. After decryption, queries show the restored fields but keep the original hash, sender and signature. Missing lifecycle metadata reads as `unknown`, and a valid zero or empty value never implies failure.
+Pending queries show placeholders and name the concealed fields. After decryption, queries show the restored fields but keep the original hash, sender and signature. Lifecycle metadata the node omits stays undefined, and a valid zero or empty value never implies failure.
 
 A receipt's decryption status and execution status are separate. Set `supportsTransactionReplacementDetection: false` on the ETX chain: concealed fields cannot show whether another transaction replaced the same intent. That turns off replacement checks for every wait on the chain; pass `checkReplacement: false` to each ETX wait instead if ordinary waits should keep them.
 
-`test/encrypted/mock.ts` holds all decoding and admission code; the sender build has none. The mock enforces its own 128 KiB size limit, gives every rejection a structured reason, drops expired pending transactions without a receipt, and scripts included failures.
+`test/encrypted/mock.ts` holds all decoding and admission code; the sender build has none. Like viem's parser, the mock requires every field and a parity of 0 or 1. It gives every rejection a structured reason, marks a payload that does not match its mask as failed without restoring any field, and scripts included failures.
 
 The regression vector is self-generated, not independent evidence of compatibility. Regenerate it after an intentional wire change:
 

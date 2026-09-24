@@ -24,7 +24,7 @@ type RpcEncryptedTransaction = Omit<
   epoch: Hex;
   encryptedFields: Hex;
   ciphertext: Hex;
-  decryptionStatus?: Exclude<DecryptionStatus, "unknown">;
+  decryptionStatus?: DecryptionStatus;
 };
 // Receipt `type` is an open string in viem, so one receipt type covers both kinds.
 type RpcReceipt = RpcTransactionReceipt & {
@@ -56,7 +56,7 @@ function transaction(
     encryptedFields,
     ciphertext: rpc.ciphertext,
     concealedFields: selectedFields(encryptedFields),
-    decryptionStatus: rpc.decryptionStatus ?? "unknown",
+    decryptionStatus: rpc.decryptionStatus,
   };
 }
 
@@ -65,15 +65,17 @@ function receipt(
 ): OrdinaryReceipt | EncryptedTransactionReceipt {
   if (rpc.type !== "0x8") return formatTransactionReceipt(rpc);
   return {
-    ...formatTransactionReceipt({ ...rpc, type: "0x2" }),
+    ...formatTransactionReceipt(rpc),
     type: "encrypted",
-    decryptionStatus: rpc.decryptionStatus ?? "unknown",
+    decryptionStatus: rpc.decryptionStatus,
     failureReason: rpc.failureReason,
   };
 }
 
 /** Use with viem's defineChain to retain ETX types in ordinary query actions. */
 export const encryptedFormatters = {
+  // `exclude: []` gives each formatter the shape viem's defineFormatter returns.
+  // Without a key beyond `type` and `format`, viem ignores these return types.
   transaction: { type: "transaction", exclude: [], format: transaction },
   transactionReceipt: {
     type: "transactionReceipt",
