@@ -1,4 +1,5 @@
 import {
+  type DecryptionStatus,
   encryptedWalletActions,
   sendEncryptedTransaction,
 } from "@monad-crypto/viem/encrypted";
@@ -15,8 +16,13 @@ import { chain } from "./mock.js";
 export async function checkTypes() {
   const transport = custom({ request: async () => null });
   const account = privateKeyToAccount(`0x${"01".repeat(32)}`);
+  const contextProvider = async () => ({
+    available: false as const,
+    epoch: 0n,
+    encryptionKey: null,
+  });
   const wallet = createWalletClient({ account, chain, transport }).extend(
-    encryptedWalletActions(),
+    encryptedWalletActions({ contextProvider }),
   );
   const unbound = createWalletClient({ chain, transport }).extend(
     encryptedWalletActions(),
@@ -26,7 +32,7 @@ export async function checkTypes() {
     to,
     gas: 21_000n,
   });
-  await sendEncryptedTransaction(wallet, { to, gas: 21_000n });
+  await sendEncryptedTransaction(wallet, { to, gas: 21_000n, contextProvider });
   await unbound.sendEncryptedTransaction({ account, to, gas: 21_000n });
   // @ts-expect-error gas is required
   await wallet.sendEncryptedTransaction({ to });
@@ -62,11 +68,9 @@ export async function checkTypes() {
       const epoch: bigint = transaction.epoch;
       void epoch;
     }
-  const receipt = await publicClient.waitForTransactionReceipt({
-    hash,
-  });
-  if (receipt.type === "encrypted" && receipt.decryptionStatus === "failed") {
-    const reason: string = receipt.failureReason;
-    void reason;
-  }
+  const receipt = await publicClient.waitForTransactionReceipt({ hash });
+  const status: DecryptionStatus | undefined = receipt.decryptionStatus;
+  const reason: string | undefined = receipt.failureReason;
+  void status;
+  void reason;
 }

@@ -24,8 +24,8 @@ export async function buildVector() {
   };
   const envelope: Envelope = {
     type: "encrypted",
-    chainId: 1337n,
-    nonce: 7n,
+    chainId: 1337,
+    nonce: 7,
     gas: 100_000n,
     maxFeePerGas: 3n,
     maxPriorityFeePerGas: 1n,

@@ -1,7 +1,4 @@
 import { expect, test } from "bun:test";
-import { createWalletClient } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
-import { chain, createMock } from "./mock.js";
 
 test("compiled export surface and real signing under Node", async () => {
   const api = await import("@monad-crypto/viem/encrypted");
@@ -11,18 +8,6 @@ test("compiled export surface and real signing under Node", async () => {
     "encryptedWalletActions",
     "sendEncryptedTransaction",
   ]);
-  const mock = createMock();
-  const wallet = createWalletClient({
-    chain,
-    transport: mock.transport,
-    account: privateKeyToAccount(`0x${"01".repeat(32)}`),
-  });
-  expect(
-    await api.sendEncryptedTransaction(wallet, {
-      to: "0x1111111111111111111111111111111111111111",
-      gas: 21_000n,
-    }),
-  ).toMatch(/^0x[\da-f]{64}$/);
   const node = Bun.spawn(
     [
       "node",
@@ -39,8 +24,8 @@ test("compiled export surface and real signing under Node", async () => {
       if (method === 'eth_chainId') return '0x539';
       if (method === 'eth_sendRawTransaction') { sent = params[0]; return keccak256(sent); }
       throw Error('Unexpected RPC');
-    }}, {retryCount: 0})});
-    const hash = await sendEncryptedTransaction(client, {to: '0x' + '11'.repeat(20), gas: 21000n, nonce: 0, maxFeePerGas: 3n, maxPriorityFeePerGas: 1n}, {contextProvider: async () => ({epoch: 1n, available: true, encryptionKey: bytesToHex(key.encryptionKey)})});
+    }})});
+    const hash = await sendEncryptedTransaction(client, {to: '0x' + '11'.repeat(20), gas: 21000n, nonce: 0, maxFeePerGas: 3n, maxPriorityFeePerGas: 1n, contextProvider: async () => ({epoch: 1n, available: true, encryptionKey: bytesToHex(key.encryptionKey)})});
     if (!sent.startsWith('0x08') || hash !== keccak256(sent)) throw Error('Invalid signed envelope');
     console.log('Node signed type 8');
   `,

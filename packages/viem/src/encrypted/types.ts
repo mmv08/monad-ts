@@ -11,26 +11,28 @@ import type {
 
 export type EncryptedField = "to" | "value" | "data" | "accessList";
 
-export type EncryptionContext =
-  | { available: true; epoch: bigint; encryptionKey: Hex }
-  | { available: false; epoch: bigint; encryptionKey: null };
+/** One key/epoch snapshot. The RPC form carries a hex epoch, as viem's Rpc* types do. */
+export type EncryptionContext<quantity = bigint> =
+  | { available: true; epoch: quantity; encryptionKey: Hex }
+  | { available: false; epoch: quantity; encryptionKey: null };
 
-export type EncryptedWalletActionsOptions = {
+export type EncryptedWalletActionsParameters = {
   /** Supplies one coherent key/epoch snapshot instead of the internal context RPC. */
-  contextProvider?: (parameters: {
-    chainId: number;
-    account: Address;
-  }) => Promise<EncryptionContext>;
+  contextProvider?:
+    | ((parameters: {
+        chainId: number;
+        account: Address;
+      }) => Promise<EncryptionContext>)
+    | undefined;
 };
 
 export type SendEncryptedTransactionParameters<
   account extends Account | undefined = undefined,
-> = {
+> = EncryptedWalletActionsParameters & {
   gas: bigint;
   value?: bigint;
   accessList?: AccessList;
   nonce?: number;
-  chainId?: number;
   maxFeePerGas?: bigint;
   maxPriorityFeePerGas?: bigint;
   encryptedFields?: readonly [EncryptedField, ...EncryptedField[]];
@@ -62,7 +64,6 @@ export type EncryptedTransaction = Omit<
 > & {
   type: "encrypted";
   typeHex: "0x8";
-  encrypted: true;
   epoch: bigint;
   encryptedFields: number;
   ciphertext: Hex;
@@ -72,8 +73,6 @@ export type EncryptedTransaction = Omit<
 
 export type EncryptedTransactionReceipt = Omit<TransactionReceipt, "type"> & {
   type: "encrypted";
-} & (
-    | { decryptionStatus: "succeeded"; failureReason?: string }
-    | { decryptionStatus: "failed"; failureReason: string; status: "reverted" }
-    | { decryptionStatus: "unknown"; failureReason?: string }
-  );
+  decryptionStatus: Exclude<DecryptionStatus, "pending">;
+  failureReason?: string;
+};

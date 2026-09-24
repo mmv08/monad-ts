@@ -14,12 +14,9 @@ import {
   trim,
   zeroAddress,
 } from "viem";
-import { assertInput } from "./errors.js";
+import { EncryptedTransactionError } from "./errors.js";
 import type { EncryptedField } from "./types.js";
 
-// TODO(spec): The PDF leaves the total transaction limit to chain policy.
-// This finite limit is the internal reference backend's policy, not a mainnet claim.
-export const MAX_TRANSACTION_BYTES = 128 * 1024;
 export const fields = ["to", "value", "data", "accessList"] as const;
 
 export type Payload = {
@@ -31,8 +28,8 @@ export type Payload = {
 
 export type Envelope = Payload & {
   type: "encrypted";
-  chainId: bigint;
-  nonce: bigint;
+  chainId: number;
+  nonce: number;
   maxPriorityFeePerGas: bigint;
   maxFeePerGas: bigint;
   gas: bigint;
@@ -43,58 +40,25 @@ export type Envelope = Payload & {
 
 type RlpValue = Hex | readonly RlpValue[];
 
-export function hex(value: unknown, bytes?: number): asserts value is Hex {
-  assertInput(
-    typeof value === "string" && /^0x(?:[\da-fA-F]{2})*$/.test(value),
-    "Expected even-length hex bytes.",
-  );
-  assertInput(
-    bytes === undefined || value.length === 2 + bytes * 2,
-    "Incorrect byte width.",
-  );
-}
-
-export function uint(value: unknown, bits: number): asserts value is bigint {
-  assertInput(
-    typeof value === "bigint" && value >= 0n && value < 1n << BigInt(bits),
-    `Expected an unsigned ${bits}-bit integer.`,
-  );
-}
-
-export function safeInteger(value: unknown): asserts value is number {
-  assertInput(
-    typeof value === "number" && Number.isSafeInteger(value) && value >= 0,
-    "Expected a nonnegative safe integer.",
-  );
-}
-
 export function maskFor(selection: readonly EncryptedField[] = fields): number {
-  assertInput(
-    Array.isArray(selection) && selection.length > 0,
-    "Select at least one encrypted field.",
-  );
   let mask = 0;
-  for (const field of selection) {
-    const index = fields.indexOf(field);
-    assertInput(
-      index >= 0 && !(mask & (1 << index)),
-      "Unknown or duplicate encrypted field.",
+  for (const field of selection) mask |= 1 << fields.indexOf(field);
+  // An unknown name shifts by -1, which sets the sign bit. Both it and an
+  // empty selection would otherwise send the payload in the clear.
+  if (mask <= 0)
+    throw new EncryptedTransactionError(
+      "invalidInput",
+      "Encrypt one or more of: to, value, data, accessList.",
     );
-    mask |= 1 << index;
-  }
   return mask;
 }
 
 export function selectedFields(mask: number): EncryptedField[] {
-  assertInput(
-    Number.isInteger(mask) && mask > 0 && mask < 16,
-    "Invalid encrypted field mask.",
-  );
   return fields.filter((_, index) => mask & (1 << index));
 }
 
-function integer(value: bigint, size: number): Hex {
-  // Viem enforces unsigned width; RLP uses minimal bytes and empty for zero.
+function integer(value: bigint | number, size: number): Hex {
+  // Viem enforces the unsigned width; RLP uses minimal bytes and empty for zero.
   const encoded = trim(toHex(value, { size }));
   return encoded === "0x00" ? "0x" : encoded;
 }
@@ -132,7 +96,7 @@ function envelopeValues(envelope: Envelope): RlpValue[] {
     integer(envelope.gas, 8),
     ...payloadValues(envelope),
     integer(envelope.epoch, 8),
-    integer(BigInt(envelope.encryptedFields), 1),
+    integer(envelope.encryptedFields, 1),
     envelope.ciphertext,
   ];
 }
@@ -152,7 +116,7 @@ export function serializeEnvelope(
             s: BigInt(signature.s),
             yParity:
               signature.yParity ??
-              (signature.v === 1n || signature.v === 28n ? 1 : 0),
+              SignatureEncoding.vToYParity(Number(signature.v)),
           })
         : []),
     ]),

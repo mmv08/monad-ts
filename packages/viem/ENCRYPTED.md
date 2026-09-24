@@ -15,7 +15,7 @@ bun run --cwd packages/viem test:encrypted
 bun run packages/viem/examples/encrypted.ts
 ```
 
-The example sends a transfer and an ABI-encoded contract call to the in-process mock. It verifies and decrypts actual signed bytes, then returns scripted receipts. It does not execute the EVM or provide threshold privacy.
+The example sends a transfer and an ABI-encoded contract call to the in-process mock. The mock verifies and decrypts the signed bytes, then returns scripted receipts. It does not execute the EVM or provide threshold privacy.
 
 For browser signing over HTTP:
 
@@ -23,7 +23,7 @@ For browser signing over HTTP:
 bun run packages/viem/examples/encrypted-server.ts
 ```
 
-Open `http://127.0.0.1:8545`. The server holds the test trapdoor; the browser generates its own local signing account. This server exposes the same mock dispatcher, with same-origin requests and a body-size limit.
+Open `http://127.0.0.1:8545`. The server holds the test trapdoor; the browser generates its own local signing account. The server wraps the same mock, accepts same-origin requests only, and limits the body size.
 
 ## API
 
@@ -43,7 +43,7 @@ const chain = defineChain({
   formatters: encryptedFormatters,
   supportsTransactionReplacementDetection: false,
 });
-const transport = http("http://127.0.0.1:8545/rpc", { retryCount: 0 });
+const transport = http("http://127.0.0.1:8545/rpc");
 const account = privateKeyToAccount(`0x${"01".repeat(32)}`); // Test key only.
 const wallet = createWalletClient({ account, chain, transport })
   .extend(encryptedWalletActions());
@@ -54,67 +54,55 @@ const hash = await wallet.sendEncryptedTransaction({
   value: 1n,
   gas: 21_000n,
 });
-const receipt = await client.waitForTransactionReceipt({
-  hash,
-  retryCount: 2,
-});
+const receipt = await client.waitForTransactionReceipt({ hash });
 if (receipt.type === "encrypted") {
   console.log(receipt.decryptionStatus);
 }
 ```
 
-The standalone `sendEncryptedTransaction(client, parameters, options?)` calls the same implementation. There are no public preparation, signing, raw-send, or receipt-waiting wrappers. Use viem's `encodeFunctionData` for contract calls.
+`sendEncryptedTransaction(client, parameters)` is the standalone form of the same action. Use viem's `encodeFunctionData` for contract calls.
 
-- `to` and `gas` are required. Use `to: null` and `data` for creation. A missing recipient is an error.
+- `to` and `gas` are required. Use `to: null` with `data` for contract creation; an omitted `to` is an error.
 - `value`, `data`, and `accessList` default to zero, empty bytes, and an empty list.
-- All four fields are concealed by default. `encryptedFields: ["to", "data"]` selects a nonempty subset. Exposing an access list can reveal the target.
-- `paddedLength` overrides BTX's 256-byte rounding. It excludes the four-byte encrypted length prefix. Exact-fit padding is allowed.
-- Nonce, chain ID, and fee caps can be supplied; otherwise the action uses viem public reads. Nonce and chain ID must fit JavaScript safe integers; the internal wire codec supports full u64 values.
-- A supplied priority fee participates in the missing fee cap calculation. Fee hooks receive only public fields. Recipient checks follow viem's address/checksum convention; unsupported fields set to `undefined` count as absent.
-- Gas estimation is never automatic. Estimate separately only on a node you trust with the plaintext, then pass `gas`.
-- Local private-key/HD accounts work, including viem nonce managers. JSON-RPC wallets are unsupported. A custom local signer must honor viem's serializer contract; the action trusts its output, as viem does.
-- The formatters support ordinary Ethereum transactions and ETX. On a chain with custom response formatters, explicitly compose its custom behavior; do not silently overwrite it.
+- All four fields are encrypted by default. `encryptedFields: ["to", "data"]` picks a nonempty subset. A public access list can reveal the target.
+- `paddedLength` overrides BTX's default padding, which rounds up to a multiple of 256 bytes, with 256 as the minimum. It excludes the four-byte length prefix, and an exact fit is allowed.
+- The nonce and fee caps may be supplied. Otherwise the action fills them as viem's `prepareTransactionRequest` does for local accounts, and fee hooks see public fields only. The chain ID comes from the client's chain, or from the node when the client has none.
+- The action never estimates gas. Estimate on a node you trust with the plaintext, then pass `gas`.
+- Local private-key and HD accounts work, including viem nonce managers. JSON-RPC wallets do not. As in viem, the action trusts what a local account signs.
+- The formatters handle ordinary transactions and ETX. A chain with its own response formatters must combine them with these by hand.
 
 ## Context and errors
 
-The default context source is the **internal** `monad_getEncryptionContext` RPC, with no arguments, returning `{ epoch, encryptionKey, available }`. This is not a claim that a public Monad node exposes that method. The key is 576 bytes and belongs to the stated active epoch.
+By default the action reads the **internal** `monad_getEncryptionContext` RPC. It takes no arguments and returns `{ epoch, encryptionKey, available }`. It is our mock's extension, later Anvil's; the inspected Monad node code has no such method.
 
-Both the decorator and standalone action accept `contextProvider: async ({ chainId, account }) => context` for fixtures or a supplied key source. It must return one coherent snapshot; source authentication remains the caller's responsibility. An unavailable key fails before encryption.
+Pass `contextProvider: async ({ chainId, account }) => context` to the action, or to `encryptedWalletActions` as a default, for fixtures or another key source. It must return one coherent snapshot, and the caller must trust its source. When encryption is unavailable, the action fails before encrypting.
 
-Catch `EncryptedTransactionError` and inspect `code`. On `unknownOutcome`, `hash` identifies the attempted send. The original submission error remains in `cause`. The action does not retry submission, re-encrypt, or sign again. Unknown rejection reasons remain uncertain rather than proving rejection. A null lookup does not prove the node rejected a transaction.
+Validation stays where viem and BTX already do it: `assertRequest` checks addresses and fee caps, the encoder checks integer widths, and BTX checks the key and padding. Their errors reach the caller unchanged. The formatters convert ETX fields without validating them, as viem's formatters do.
 
-Malformed ETX query metadata reports `invalidResponse`; malformed key context reports `invalidContext`. Ordinary fields use viem's formatting and errors. Recipient/account validation uses `InvalidAddressError`, excessive priority fees use `TipAboveFeeCapError`, and configured-chain mismatches use `ChainMismatchError`. An invalid RPC chain ID or a conflicting numeric request chain ID uses `InvalidChainIdError`.
+`EncryptedTransactionError` covers the cases viem has no error for. Inspect `code`:
 
-Use a single-attempt wallet transport. Built-in fallback is rejected because it can submit to another endpoint after a timeout. Custom transports must honor the same rule. Internal public reads override the existing viem request layer to allow two retries, regardless of the transport's default retry count; deterministic local validation does not retry.
+- `invalidInput`: `encryptedFields` is empty or names an unknown field.
+- `unsupportedSigner`: the account is missing or not local.
+- `unavailable`: the context has no key for the active epoch.
+- `rejected` or `expiredEpoch`: the backend's error carried a structured `data.reason`.
+- `unknownOutcome`: the send failed without a reason, or the node returned another hash. The transaction may still be pending, so look up `hash` before acting.
 
-Viem nonce managers reserve a nonce before encryption/signing. A later local failure can leave a gap; use an explicit nonce after checking pending state. The action never resets shared nonce-manager state or releases a nonce after an uncertain send. Without a nonce manager, concurrent calls have viem's ordinary pending-nonce race.
+Submission failures carry the local `hash`, and the original error as `cause`. The action sends once and never re-encrypts or signs again; viem's `sendRawTransaction` already disables retries, and reads follow the transport's own retry setting. When a send fails before submission, the action hands a managed nonce back, as viem does. A null lookup does not prove that the node rejected a transaction.
 
 ## Identity and limits
 
-Transactions use type `0x08`, the PDF's four-field mask, version-1 sender/skeleton binding, BTX encryption, and a secp256k1 signature over the full typed envelope. The codec uses Ethereum-style typed RLP and the `yParity, r, s` suffix. The PDF does not spell out every RLP convention; fixtures record this interpretation for later node comparison.
+Transactions use type `0x08`, the PDF's four-field mask, the version-1 sender/skeleton binding, BTX encryption, and a secp256k1 signature over the full typed envelope. The codec uses Ethereum-style typed RLP with a `yParity, r, s` suffix. The PDF does not spell out every RLP convention, so the committed vector records this reading for later comparison with a node.
 
-The reference total-size limit is 128 KiB, including the signature. This is a finite local policy, not a production Monad limit. No ETX surcharge is added.
+Pending queries show placeholders and name the concealed fields. After decryption, queries show the restored fields but keep the original hash, sender and signature. Missing lifecycle metadata reads as `unknown`, and a valid zero or empty value never implies failure.
 
-Pending queries show placeholders and concealed-field markers. Decrypted queries show an execution view while keeping the original hash, sender, and signature. Never serialize restored fields to compute the signed transaction hash. Missing lifecycle metadata yields `unknown`; valid zero/empty values never imply failure.
+A receipt's decryption status and execution status are separate. Set `supportsTransactionReplacementDetection: false` on the ETX chain: concealed fields cannot show whether another transaction replaced the same intent. That turns off replacement checks for every wait on the chain; pass `checkReplacement: false` to each ETX wait instead if ordinary waits should keep them.
 
-Receipt decryption status and execution status are separate. Set `supportsTransactionReplacementDetection: false` in the ETX chain configuration: concealed fields cannot establish whether another transaction changed the same intent. This disables replacement checks for all waits using that chain, including ordinary transactions; use `checkReplacement: false` per ETX wait instead if ordinary waits should retain detection. The mock drops expired pending transactions without a receipt; included failures use scripted full-gas-limit charges and nonce consumption.
+`test/encrypted/mock.ts` holds all decoding and admission code; the sender build has none. The mock enforces its own 128 KiB size limit, gives every rejection a structured reason, drops expired pending transactions without a receipt, and scripts included failures.
 
-Validation follows viem's boundaries: encoding enforces wire widths, BTX enforces padding and key validity, and formatters normalize ordinary RPC fields rather than repeating admission. Context and added ETX metadata have their own checks. Signature range/low-s checks run at mock/node admission, not serialization. See the validation ownership table in [ARCHITECTURE.md](./ARCHITECTURE.md).
-
-The regression vector is self-generated, not independent compatibility evidence. Regenerate it after an intentional wire change:
+The regression vector is self-generated, not independent evidence of compatibility. Regenerate it after an intentional wire change:
 
 ```sh
 bun run packages/viem/test/encrypted/fixtures.ts
 ```
 
-Anvil EVM execution and comparison with a compatible node remain later phases.
-
-All mock-only decoding and admission helpers live in `test/encrypted/mock.ts`. The sender build contains no envelope parser or payload decoder. When replacing the mock, update its tests and examples without pruning backend helpers from `src`.
-
-## Verification recorded for this change
-
-- Workspace build and type checks passed.
-- Offline ETX tests cover compiled package imports, Node signing, permissive signature serialization, and strict mock admission.
-- The browser HTTP example encrypted and signed locally in headless Chrome and received a scripted success receipt.
-- Focused Biome checks passed. The root lint command encountered existing nested Biome configurations in `.claude/worktrees/`.
-- Coverage reports include both source and compiled consumer modules as well as BTX; their aggregate is not a sender-only coverage figure. The repository's thresholds are unchanged.
+Anvil EVM execution and comparison with a compatible node come in later phases.

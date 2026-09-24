@@ -34,9 +34,6 @@ for (const data of [
   });
   console.log("Mock accepted:", hash);
   mock.include(hash);
-  const receipt = await client.waitForTransactionReceipt({
-    hash,
-    retryCount: 2,
-  });
+  const receipt = await client.waitForTransactionReceipt({ hash });
   console.log("Scripted receipt (no EVM execution):", receipt.status);
 }

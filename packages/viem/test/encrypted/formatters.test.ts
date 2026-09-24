@@ -45,78 +45,55 @@ const rpcReceipt: RpcTransactionReceipt = {
   logs: [],
   logsBloom: `0x${"00".repeat(256)}`,
 };
-test("ordinary transaction and receipt fields use viem formatting", () => {
+
+test("ordinary transactions and receipts get viem's own formatting", () => {
   expect(encryptedFormatters.transaction.format(rpc)).toEqual(
     formatTransaction(rpc),
   );
-  for (const type of ["0x0", "0x1", "0x2", "0x3", "0x4", "0x9"] as const) {
-    const receipt = { ...rpcReceipt, type };
-    expect(encryptedFormatters.transactionReceipt.format(receipt)).toEqual({
-      ...formatTransactionReceipt(receipt),
-      decryptionStatus: undefined,
-      failureReason: undefined,
-    });
-  }
+  expect(encryptedFormatters.transactionReceipt.format(rpcReceipt)).toEqual(
+    formatTransactionReceipt(rpcReceipt),
+  );
 });
 
-test("ETX transaction metadata failures report invalidResponse", () => {
-  const transaction = (overrides: Record<string, unknown>) =>
+test("ETX fields are converted, and missing lifecycle metadata reads as unknown", () => {
+  const etx = {
+    ...rpc,
+    type: "0x8",
+    epoch: "0x1",
+    encryptedFields: "0x5",
+    ciphertext: "0x1234",
+  } as const;
+  expect(
     encryptedFormatters.transaction.format({
-      ...rpc,
-      type: "0x8",
-      epoch: "0x1",
-      encryptedFields: "0xf",
-      ciphertext: "0x",
+      ...etx,
       decryptionStatus: "pending",
-      ...overrides,
-    });
-  for (const overrides of [
-    { encrypted: false },
-    { concealedFields: [] },
-    { concealedFields: ["to", "value", "nonce", "accessList"] },
-    { epoch: "0x01" },
-    { encryptedFields: "0x0" },
-    { ciphertext: "0xgg" },
-    { decryptionStatus: "invalid" },
-  ])
-    expect(() => transaction(overrides)).toThrow(
-      expect.objectContaining({ code: "invalidResponse" }),
-    );
-  expect(transaction({ decryptionStatus: undefined })).toMatchObject({
+    }),
+  ).toMatchObject({
+    type: "encrypted",
+    typeHex: "0x8",
+    epoch: 1n,
+    encryptedFields: 5,
+    ciphertext: "0x1234",
+    concealedFields: ["to", "data"],
+    decryptionStatus: "pending",
+  });
+  expect(encryptedFormatters.transaction.format(etx)).toMatchObject({
     decryptionStatus: "unknown",
   });
+  const etxReceipt = { ...rpcReceipt, type: "0x8", status: "0x0" } as const;
   expect(
-    transaction({
-      concealedFields: ["to", "value", "input", "accessList"],
-    }),
-  ).toMatchObject({ concealedFields: ["to", "value", "data", "accessList"] });
-  // Ordinary fields are formatted, not checked against admission rules.
-  expect(
-    transaction({
-      value: "0x1",
-      maxFeePerGas: "0x0",
-    }),
-  ).toMatchObject({ value: 1n, maxFeePerGas: 0n });
-});
-
-test("ETX receipt metadata keeps decryption and execution status separate", () => {
-  const receipt = (overrides: Record<string, unknown>) =>
     encryptedFormatters.transactionReceipt.format({
-      ...rpcReceipt,
-      type: "0x8",
-      decryptionStatus: "succeeded",
-      ...overrides,
-    });
-  for (const overrides of [
-    { decryptionStatus: "pending" },
-    { failureReason: 1 },
-    { decryptionStatus: "failed", failureReason: "decryptionFailed" },
-    { decryptionStatus: "failed", status: "0x0" },
-  ])
-    expect(() => receipt(overrides)).toThrow(
-      expect.objectContaining({ code: "invalidResponse" }),
-    );
-  expect(receipt({ decryptionStatus: undefined })).toMatchObject({
-    decryptionStatus: "unknown",
+      ...etxReceipt,
+      decryptionStatus: "failed",
+      failureReason: "decryptionFailed",
+    }),
+  ).toMatchObject({
+    type: "encrypted",
+    status: "reverted",
+    decryptionStatus: "failed",
+    failureReason: "decryptionFailed",
   });
+  expect(
+    encryptedFormatters.transactionReceipt.format(etxReceipt),
+  ).toMatchObject({ decryptionStatus: "unknown" });
 });

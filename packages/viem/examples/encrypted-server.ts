@@ -1,4 +1,4 @@
-import { hex } from "../src/encrypted/codec.js";
+import type { Hex } from "viem";
 import { createMock } from "../test/encrypted/mock.js";
 
 const mock = createMock();
@@ -47,10 +47,8 @@ Bun.serve({
         method: body.method,
         params: "params" in body ? body.params : undefined,
       });
-      if (body.method === "eth_sendRawTransaction") {
-        hex(result, 32);
-        mock.include(result);
-      }
+      // The example mines each accepted transaction at once.
+      if (body.method === "eth_sendRawTransaction") mock.include(result as Hex);
       return Response.json({ jsonrpc: "2.0", id, result });
     } catch (error) {
       return Response.json({

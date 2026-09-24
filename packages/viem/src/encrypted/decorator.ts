@@ -1,7 +1,7 @@
 import type { Account, Chain, Client, Transport } from "viem";
 import { sendEncryptedTransaction } from "./sendEncryptedTransaction.js";
 import type {
-  EncryptedWalletActionsOptions,
+  EncryptedWalletActionsParameters,
   SendEncryptedTransactionParameters,
   SendEncryptedTransactionReturnType,
 } from "./types.js";
@@ -19,10 +19,10 @@ export type EncryptedWalletActions<
   ) => Promise<SendEncryptedTransactionReturnType>;
 };
 
-/** Adds the encrypted send action to a viem client. */
-export function encryptedWalletActions(
-  options: EncryptedWalletActionsOptions = {},
-) {
+/** Adds the encrypted send action to a viem client. A `contextProvider` given here is the default for each send. */
+export function encryptedWalletActions({
+  contextProvider,
+}: EncryptedWalletActionsParameters = {}) {
   return <
     transport extends Transport,
     chain extends Chain | undefined,
@@ -31,6 +31,6 @@ export function encryptedWalletActions(
     client: Client<transport, chain, account>,
   ): EncryptedWalletActions<account> => ({
     sendEncryptedTransaction: (parameters) =>
-      sendEncryptedTransaction(client, parameters, options),
+      sendEncryptedTransaction(client, { contextProvider, ...parameters }),
   });
 }

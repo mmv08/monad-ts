@@ -13,7 +13,7 @@ export type {
   EncryptedField,
   EncryptedTransaction,
   EncryptedTransactionReceipt,
-  EncryptedWalletActionsOptions,
+  EncryptedWalletActionsParameters,
   EncryptionContext,
   SendEncryptedTransactionParameters,
   SendEncryptedTransactionReturnType,

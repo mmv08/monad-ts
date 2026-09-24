@@ -2,16 +2,13 @@ import { BaseError, type Hash } from "viem";
 
 export type EncryptedTransactionErrorCode =
   | "invalidInput"
-  | "invalidContext"
-  | "unavailable"
   | "unsupportedSigner"
-  | "unsupportedTransport"
-  | "invalidResponse"
+  | "unavailable"
   | "rejected"
   | "expiredEpoch"
   | "unknownOutcome";
 
-/** An ETX-specific failure. A hash on unknownOutcome identifies the attempted send. */
+/** An ETX-specific failure. On a failed submission, `hash` identifies the attempted send. */
 export class EncryptedTransactionError extends BaseError {
   readonly code: EncryptedTransactionErrorCode;
   readonly hash?: Hash;
@@ -25,11 +22,4 @@ export class EncryptedTransactionError extends BaseError {
     this.code = code;
     this.hash = options.hash;
   }
-}
-
-export function assertInput(
-  condition: unknown,
-  message: string,
-): asserts condition {
-  if (!condition) throw new EncryptedTransactionError("invalidInput", message);
 }

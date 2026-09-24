@@ -18,7 +18,7 @@ const chain = defineChain({
   formatters: encryptedFormatters,
   supportsTransactionReplacementDetection: false,
 });
-const transport = http(chain.rpcUrls.default.http[0], { retryCount: 0 });
+const transport = http(chain.rpcUrls.default.http[0]);
 const wallet = createWalletClient({
   account: privateKeyToAccount(generatePrivateKey()),
   chain,
@@ -34,10 +34,7 @@ const result = await (async () => {
       value: 1n,
       gas: 21_000n,
     });
-    const receipt = await publicClient.waitForTransactionReceipt({
-      hash,
-      retryCount: 2,
-    });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash });
     return `Scripted receipt: ${receipt.status}\nHash: ${hash}\nNo EVM execution or threshold privacy.`;
   } catch (error) {
     return error instanceof Error ? error.message : "Example failed";

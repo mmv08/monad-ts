@@ -2,15 +2,14 @@ import {
   formatBlock,
   formatTransaction,
   formatTransactionReceipt,
+  type Hex,
   type RpcBlock,
   type RpcTransaction,
   type RpcTransactionReceipt,
   type Transaction,
   type TransactionReceipt,
 } from "viem";
-import { hex, selectedFields } from "./codec.js";
-import { quantity } from "./context.js";
-import { EncryptedTransactionError } from "./errors.js";
+import { selectedFields } from "./codec.js";
 import type {
   DecryptionStatus,
   EncryptedTransaction,
@@ -22,132 +21,55 @@ type RpcEncryptedTransaction = Omit<
   "type"
 > & {
   type: "0x8";
-  epoch: unknown;
-  encryptedFields: unknown;
-  ciphertext: unknown;
-  encrypted?: unknown;
-  concealedFields?: unknown;
-  decryptionStatus?: unknown;
+  epoch: Hex;
+  encryptedFields: Hex;
+  ciphertext: Hex;
+  decryptionStatus?: Exclude<DecryptionStatus, "unknown">;
 };
-type RpcEncryptedReceipt = Omit<RpcTransactionReceipt, "type"> & {
-  type: "0x8";
-  decryptionStatus?: unknown;
-  failureReason?: unknown;
+// Receipt `type` is an open string in viem, so one receipt type covers both kinds.
+type RpcReceipt = RpcTransactionReceipt & {
+  decryptionStatus?: "succeeded" | "failed";
+  failureReason?: string;
 };
-
-function status(value: unknown): DecryptionStatus {
-  if (value === undefined) return "unknown";
-  if (value === "pending" || value === "succeeded" || value === "failed")
-    return value;
-  throw new EncryptedTransactionError(
-    "invalidResponse",
-    "Invalid decryption status.",
-  );
-}
-
-function transaction(
-  rpc: RpcTransaction | RpcEncryptedTransaction,
-): Transaction | EncryptedTransaction {
-  if (rpc.type !== "0x8") return formatTransaction(rpc);
-  try {
-    const epoch = quantity(rpc.epoch, 64);
-    const encryptedFields = Number(quantity(rpc.encryptedFields, 8));
-    const concealedFields = selectedFields(encryptedFields);
-    hex(rpc.ciphertext);
-    if (rpc.encrypted !== undefined && rpc.encrypted !== true)
-      throw new EncryptedTransactionError(
-        "invalidResponse",
-        "Invalid encrypted transaction marker.",
-      );
-    if (
-      rpc.concealedFields !== undefined &&
-      (!Array.isArray(rpc.concealedFields) ||
-        rpc.concealedFields.length !== concealedFields.length ||
-        !rpc.concealedFields.every(
-          (field, index) =>
-            field === concealedFields[index] ||
-            (field === "input" && concealedFields[index] === "data"),
-        ))
-    )
-      throw new EncryptedTransactionError(
-        "invalidResponse",
-        "Concealed fields do not match the mask.",
-      );
-    // Viem returns the entire Transaction union even for a literal 0x2 input.
-    // Narrow that known mapping, without revalidating viem's output at runtime.
-    const formatted = formatTransaction({ ...rpc, type: "0x2" }) as Extract<
-      Transaction,
-      { type: "eip1559" }
-    >;
-    const decryptionStatus = status(rpc.decryptionStatus);
-    return {
-      ...formatted,
-      type: "encrypted",
-      typeHex: "0x8",
-      encrypted: true,
-      epoch,
-      encryptedFields,
-      ciphertext: rpc.ciphertext,
-      concealedFields,
-      decryptionStatus,
-    };
-  } catch (cause) {
-    if (
-      cause instanceof EncryptedTransactionError &&
-      cause.code === "invalidInput"
-    )
-      throw new EncryptedTransactionError(
-        "invalidResponse",
-        cause.shortMessage,
-        { cause },
-      );
-    throw cause;
-  }
-}
-
+// For the same reason, ordinary receipts declare the ETX keys absent.
 type OrdinaryReceipt = TransactionReceipt & {
   decryptionStatus?: undefined;
   failureReason?: undefined;
 };
 
+// Like viem's own formatters, these convert fields and do not validate them.
+function transaction(
+  rpc: RpcTransaction | RpcEncryptedTransaction,
+): Transaction | EncryptedTransaction {
+  if (rpc.type !== "0x8") return formatTransaction(rpc);
+  // Viem returns the entire Transaction union even for a literal 0x2 input.
+  const formatted = formatTransaction({ ...rpc, type: "0x2" }) as Extract<
+    Transaction,
+    { type: "eip1559" }
+  >;
+  const encryptedFields = Number(rpc.encryptedFields);
+  return {
+    ...formatted,
+    type: "encrypted",
+    typeHex: "0x8",
+    epoch: BigInt(rpc.epoch),
+    encryptedFields,
+    ciphertext: rpc.ciphertext,
+    concealedFields: selectedFields(encryptedFields),
+    decryptionStatus: rpc.decryptionStatus ?? "unknown",
+  };
+}
+
 function receipt(
-  rpc: RpcTransactionReceipt | RpcEncryptedReceipt,
+  rpc: RpcReceipt,
 ): OrdinaryReceipt | EncryptedTransactionReceipt {
-  if (rpc.type !== "0x8") {
-    return {
-      ...formatTransactionReceipt(rpc),
-      decryptionStatus: undefined,
-      failureReason: undefined,
-    };
-  }
-  const formatted = formatTransactionReceipt({ ...rpc, type: "0x2" });
-  const decryptionStatus = status(
-    "decryptionStatus" in rpc ? rpc.decryptionStatus : undefined,
-  );
-  const failureReason = "failureReason" in rpc ? rpc.failureReason : undefined;
-  if (
-    decryptionStatus === "pending" ||
-    (failureReason !== undefined && typeof failureReason !== "string")
-  )
-    throw new EncryptedTransactionError(
-      "invalidResponse",
-      "Invalid encrypted receipt metadata.",
-    );
-  if (decryptionStatus === "failed") {
-    if (formatted.status !== "reverted" || !failureReason)
-      throw new EncryptedTransactionError(
-        "invalidResponse",
-        "Invalid failed-decryption receipt.",
-      );
-    return {
-      ...formatted,
-      type: "encrypted",
-      decryptionStatus,
-      failureReason,
-      status: "reverted",
-    };
-  }
-  return { ...formatted, type: "encrypted", decryptionStatus, failureReason };
+  if (rpc.type !== "0x8") return formatTransactionReceipt(rpc);
+  return {
+    ...formatTransactionReceipt({ ...rpc, type: "0x2" }),
+    type: "encrypted",
+    decryptionStatus: rpc.decryptionStatus ?? "unknown",
+    failureReason: rpc.failureReason,
+  };
 }
 
 /** Use with viem's defineChain to retain ETX types in ordinary query actions. */
@@ -163,13 +85,10 @@ export const encryptedFormatters = {
     exclude: [],
     format(
       rpc: Omit<RpcBlock, "transactions"> & {
-        transactions: (
-          | RpcTransaction
-          | RpcEncryptedTransaction
-          | `0x${string}`
-        )[];
+        transactions: (RpcTransaction | RpcEncryptedTransaction | Hex)[];
       },
     ) {
+      // Viem's block formatter calls its own transaction formatter, so map full transactions here.
       return {
         ...formatBlock({ ...rpc, transactions: [] }),
         transactions: rpc.transactions.map((value) =>
