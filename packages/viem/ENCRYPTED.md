@@ -84,7 +84,7 @@ Validation stays where viem and BTX already do it. `assertRequest` checks addres
 - `unsupportedSigner`: the account is missing or not local.
 - `unavailable`: the context has no key for the active epoch.
 - `rejected`: the backend's error carried a structured `data.reason`, such as `expiredEpoch`. `error.walk()` reaches it.
-- `unknownOutcome`: the send failed without a reason. The transaction may still be pending, so look up `hash` before acting.
+- `unknownOutcome`: the send failed or was aborted without a reason. The transaction may still be pending, so look up `hash` before acting.
 
 On success the action returns the hash of the signed bytes; it does not compare it with the node's reply. Submission failures carry that `hash`, and the original error as `cause`. The action sends once and never re-encrypts or signs again; viem's `sendRawTransaction` already disables retries, and reads follow the transport's own retry setting. As in viem, any failure after the action takes a managed nonce resets the nonce manager, so the next send reads the pending nonce from the node. A null lookup does not prove that the node rejected a transaction.
 

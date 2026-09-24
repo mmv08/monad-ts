@@ -150,17 +150,22 @@ test("a stale epoch is rejected, with a decorator's contextProvider as the defau
 });
 
 test("failed submissions keep the hash and cause, and send once", async () => {
-  // The transport retries by default; the action must still send once.
+  // The transport retries by default, and viem passes aborts through
+  // unwrapped; the action must still send once and keep the hash.
   const { mock, wallet } = setup();
-  mock.timeoutAfterAccept = true;
-  const uncertain = await sendError(wallet.sendEncryptedTransaction(request));
-  expect(uncertain.code).toBe("unknownOutcome");
-  expect(uncertain.walk()).toMatchObject({
-    message: "Connection lost after acceptance",
-  });
-  // The mock accepted these bytes, so the reported hash finds them.
-  expect(mock.transaction(uncertain.hash)).not.toBeNull();
-  expect(sends(mock)).toBe(1);
+  const failures = [
+    new Error("Connection lost after acceptance"),
+    new DOMException("The operation was aborted", "AbortError"),
+  ];
+  for (const failure of failures) {
+    mock.failAfterAccept = failure;
+    const uncertain = await sendError(wallet.sendEncryptedTransaction(request));
+    expect(uncertain.code).toBe("unknownOutcome");
+    expect(uncertain.walk()).toBe(failure);
+    // The mock accepted these bytes, so the reported hash finds them.
+    expect(mock.transaction(uncertain.hash)).not.toBeNull();
+  }
+  expect(sends(mock)).toBe(failures.length);
   // A structured reason proves rejection: here a signer other than the
   // sender bound into the proof.
   const other = privateKeyToAccount(`0x${"02".repeat(32)}`);

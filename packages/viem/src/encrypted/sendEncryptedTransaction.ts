@@ -157,10 +157,11 @@ export async function sendEncryptedTransaction<
     // so the next send reads the pending nonce from the node again.
     nonceManager?.reset({ address: account.address, chainId });
     if (hash === undefined) throw error;
-    // Viem wraps every request failure in a BaseError. Only a structured backend
-    // reason among its causes proves rejection; any other failure may follow acceptance.
+    // Only a structured backend reason among the causes proves rejection; any
+    // other failure may follow acceptance. Viem passes aborts through unwrapped,
+    // so, as in viem, `walk` is called only if the error has it.
     const cause = error as BaseError;
-    throw cause.walk(hasReason)
+    throw cause.walk?.(hasReason)
       ? new EncryptedTransactionError(
           "rejected",
           "The backend rejected the encrypted transaction.",

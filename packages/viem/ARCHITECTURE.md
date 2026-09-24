@@ -14,7 +14,7 @@ Public runtime exports are `sendEncryptedTransaction`, `encryptedWalletActions`,
 2. The encryption context comes from the internal `monad_getEncryptionContext` RPC or an injected provider. BTX checks the key; the provider is responsible for its authenticity.
 3. `codec.ts` encodes the selected real fields with Ox RLP, puts placeholders in the envelope, builds the skeleton digest and versioned sender binding, and serializes type 8. The serializer makes the checks of viem's EIP-1559 serializer: `assertTransactionEIP1559`, `numberToHex` and `serializeAccessList`.
 4. BTX receives owned byte arrays for the plaintext, key and associated data. It supplies padding and secure randomness. No testing entry enters sender code.
-5. The local account signs through viem's custom-serializer hook and is trusted, as in viem. The action makes one `eth_sendRawTransaction` request and returns the locally computed hash; failures carry that hash, with the RPC error as cause.
+5. The local account signs through viem's custom-serializer hook and is trusted, as in viem. The action makes one `eth_sendRawTransaction` request and returns the locally computed hash; failures carry that hash, with the RPC error as cause. Viem passes aborts through unwrapped, so an abort also ends as `unknownOutcome` with the hash.
 6. `formatters.ts` plugs transaction, receipt and full-block handling into viem's chain formatters. Like viem's own formatters, it converts fields without validating them. Query views never replace the original signed bytes.
 
 ### Validation

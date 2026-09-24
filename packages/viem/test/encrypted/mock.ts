@@ -147,7 +147,8 @@ export function createMock() {
     key: createTestKey({ trapdoor: 42n }),
     epoch: 1n,
     available: true,
-    timeoutAfterAccept: false,
+    /** Thrown after acceptance, as a dropped or aborted connection would be. */
+    failAfterAccept: undefined as unknown,
     calls: [] as { method: string; params?: unknown }[],
     async request({
       method,
@@ -206,8 +207,7 @@ export function createMock() {
               ad,
               status: "pending",
             });
-          if (mock.timeoutAfterAccept)
-            throw new Error("Connection lost after acceptance");
+          if (mock.failAfterAccept) throw mock.failAfterAccept;
           return hash;
         }
         case "eth_getTransactionByHash":
