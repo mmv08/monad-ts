@@ -1,5 +1,6 @@
 import { admitCiphertext } from "@monad-crypto/btx";
 import { createTestKey } from "@monad-crypto/btx/testing";
+import { noble as secp256k1 } from "ox/Secp256k1";
 import {
   bytesToHex,
   custom,
@@ -7,9 +8,9 @@ import {
   type Hex,
   hexToBytes,
   keccak256,
-  recoverAddress,
   toHex,
 } from "viem";
+import { publicKeyToAddress } from "viem/accounts";
 import {
   associatedData,
   decodePayload,
@@ -109,16 +110,22 @@ export function createMock() {
           // The decoder validates these untrusted bytes, not the transport's type annotation.
           const signed = parseEnvelope(raw as Hex);
           const { envelope, signature } = signed;
+          // Admission, not serialization, enforces scalar ranges and EIP-2.
+          const curveSignature = new secp256k1.Signature(
+            BigInt(signature.r),
+            BigInt(signature.s),
+          );
+          if (curveSignature.hasHighS()) throw rpcError("invalidSignature");
           if (envelope.chainId !== BigInt(chain.id))
             throw rpcError("chainIdMismatch");
           if (!mock.available) throw rpcError("unavailable");
           if (envelope.epoch !== mock.epoch) throw rpcError("expiredEpoch");
           if (envelope.gas > 30_000_000n || envelope.maxFeePerGas < 1n)
             throw rpcError("publicValidationFailed");
-          const sender = await recoverAddress({
-            hash: keccak256(serializeEnvelope(envelope)),
-            signature,
-          });
+          const publicKey = curveSignature
+            .addRecoveryBit(signature.yParity ?? 0)
+            .recoverPublicKey(keccak256(serializeEnvelope(envelope)).slice(2));
+          const sender = publicKeyToAddress(`0x${publicKey.toHex(false)}`);
           if (envelope.nonce < (nonces.get(sender.toLowerCase()) ?? 0n))
             throw rpcError("nonceTooLow");
           // Fixture accounts have a fixed reserve; concealed value is not checked here.

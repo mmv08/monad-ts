@@ -12,7 +12,6 @@ import {
   custom,
   hexToBytes,
   keccak256,
-  recoverAddress,
   type Transport,
 } from "viem";
 import {
@@ -29,12 +28,8 @@ import {
   MAX_TRANSACTION_BYTES,
   maskFor,
   type Payload,
-  parseEnvelope,
-  payloadValues,
   safeInteger,
-  serializeEnvelope,
   serializeTransaction,
-  uint,
 } from "./codec.js";
 import { parseContext } from "./context.js";
 import { assertInput, EncryptedTransactionError } from "./errors.js";
@@ -64,6 +59,7 @@ const rejectionReasons = new Set([
   "invalidEnvelope",
   "invalidCiphertext",
   "invalidProof",
+  "invalidSignature",
   "chainIdMismatch",
   "publicValidationFailed",
   "nonceTooLow",
@@ -99,22 +95,11 @@ export async function sendEncryptedTransaction<
     );
   for (const field of forbidden)
     assertInput(!(field in parameters), "Unsupported transaction field.");
-  uint(parameters.gas, 64);
-  for (const value of [parameters.nonce, parameters.chainId])
-    if (value !== undefined) safeInteger(value);
-  for (const value of [
-    parameters.maxFeePerGas,
-    parameters.maxPriorityFeePerGas,
-  ])
-    if (value !== undefined) uint(value, 128);
-  if (
-    parameters.maxFeePerGas !== undefined &&
-    parameters.maxPriorityFeePerGas !== undefined
-  )
-    assertInput(
-      parameters.maxPriorityFeePerGas <= parameters.maxFeePerGas,
-      "Priority fee exceeds fee cap.",
-    );
+  // Required gas is a privacy boundary: never substitute remote estimation.
+  assertInput(
+    typeof parameters.gas === "bigint",
+    "An explicit gas limit is required.",
+  );
   assertInput(
     parameters.to !== null || parameters.data !== undefined,
     "Contract creation requires initcode.",
@@ -125,7 +110,6 @@ export async function sendEncryptedTransaction<
     data: parameters.data ?? "0x",
     accessList: parameters.accessList ?? [],
   };
-  payloadValues(payload);
   payload.accessList = payload.accessList.map(({ address, storageKeys }) => ({
     address,
     storageKeys: [...storageKeys],
@@ -134,11 +118,9 @@ export async function sendEncryptedTransaction<
   const plaintext = hexToBytes(encodePayload(payload, encryptedFields));
   const paddedLength =
     parameters.paddedLength ?? paddedLengthFor(plaintext.length);
-  safeInteger(paddedLength);
   assertInput(
-    paddedLength >= plaintext.length &&
-      paddedLength + 136 + 128 < MAX_TRANSACTION_BYTES,
-    "Padding exceeds the reference limit or is smaller than the payload.",
+    paddedLength + 136 <= MAX_TRANSACTION_BYTES,
+    "Padding exceeds the reference size limit.",
   );
   // Snapshot caller-owned options before awaiting any reads.
   const request = { ...parameters };
@@ -157,7 +139,6 @@ export async function sendEncryptedTransaction<
     ),
   });
   const chainId = await getChainId(reader);
-  safeInteger(chainId);
   assertInput(
     chainId > 0 &&
       (client.chain === undefined || client.chain.id === chainId) &&
@@ -175,8 +156,6 @@ export async function sendEncryptedTransaction<
   const maxFeePerGas = request.maxFeePerGas ?? fees.maxFeePerGas;
   const maxPriorityFeePerGas =
     request.maxPriorityFeePerGas ?? fees.maxPriorityFeePerGas;
-  uint(maxFeePerGas, 128);
-  uint(maxPriorityFeePerGas, 128);
   assertInput(
     maxPriorityFeePerGas <= maxFeePerGas,
     "Priority fee exceeds fee cap.",
@@ -232,28 +211,14 @@ export async function sendEncryptedTransaction<
       }),
     ),
   );
-  // Size-check the complete envelope, reserving the maximum signature RLP suffix.
-  assertInput(
-    serializeEnvelope(envelope).length / 2 - 1 + 67 <= MAX_TRANSACTION_BYTES,
-    "Transaction exceeds the reference size limit.",
-  );
-  const unsigned = serializeEnvelope(envelope);
   const serializedTransaction = await signer.signTransaction(envelope, {
     serializer: serializeTransaction,
   });
-  const signed = parseEnvelope(serializedTransaction);
-  const recovered = await recoverAddress({
-    hash: keccak256(unsigned),
-    signature: signed.signature,
-  });
-  if (
-    serializeEnvelope(signed.envelope) !== unsigned.toLowerCase() ||
-    recovered.toLowerCase() !== signer.address.toLowerCase()
-  )
-    throw new EncryptedTransactionError(
-      "unsupportedSigner",
-      "Signer returned a different transaction or sender.",
-    );
+  // As in viem, a configured local signer is trusted to honor the serializer.
+  assertInput(
+    serializedTransaction.length / 2 - 1 <= MAX_TRANSACTION_BYTES,
+    "Transaction exceeds the reference size limit.",
+  );
   const hash = keccak256(serializedTransaction);
   let returnedHash: unknown;
   try {

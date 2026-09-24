@@ -7,9 +7,8 @@ import {
   type RpcTransactionReceipt,
   type Transaction,
   type TransactionReceipt,
-  zeroAddress,
 } from "viem";
-import { hex, payloadValues, safeInteger, selectedFields } from "./codec.js";
+import { hex, selectedFields } from "./codec.js";
 import { quantity } from "./context.js";
 import { EncryptedTransactionError } from "./errors.js";
 import type {
@@ -54,28 +53,6 @@ function transaction(
   const encryptedFields = Number(quantity(rpc.encryptedFields, 8));
   const concealedFields = selectedFields(encryptedFields);
   hex(rpc.ciphertext);
-  hex(rpc.hash, 32);
-  hex(rpc.from, 20);
-  hex(rpc.r, 32);
-  hex(rpc.s, 32);
-  const chainId = quantity(rpc.chainId, 64);
-  const nonce = quantity(rpc.nonce, 64);
-  safeInteger(Number(chainId));
-  safeInteger(Number(nonce));
-  quantity(rpc.gas, 64);
-  const maxFeePerGas = quantity(rpc.maxFeePerGas, 128);
-  const priorityFee = quantity(rpc.maxPriorityFeePerGas, 128);
-  if (priorityFee > maxFeePerGas || chainId === 0n)
-    throw new EncryptedTransactionError(
-      "invalidResponse",
-      "Invalid public transaction fields.",
-    );
-  payloadValues({
-    to: rpc.to,
-    value: quantity(rpc.value, 256),
-    data: rpc.input,
-    accessList: rpc.accessList,
-  });
   if (rpc.encrypted !== undefined && rpc.encrypted !== true)
     throw new EncryptedTransactionError(
       "invalidResponse",
@@ -95,26 +72,13 @@ function transaction(
       "invalidResponse",
       "Concealed fields do not match the mask.",
     );
-  const formatted = formatTransaction({ ...rpc, type: "0x2" });
-  // Narrow viem's ordinary union before replacing its discriminator.
-  if (formatted.type !== "eip1559")
-    throw new EncryptedTransactionError(
-      "invalidResponse",
-      "Invalid fee-market transaction.",
-    );
+  // Viem returns the entire Transaction union even for a literal 0x2 input.
+  // Narrow that known mapping, without revalidating viem's output at runtime.
+  const formatted = formatTransaction({ ...rpc, type: "0x2" }) as Extract<
+    Transaction,
+    { type: "eip1559" }
+  >;
   const decryptionStatus = status(rpc.decryptionStatus);
-  if (decryptionStatus === "pending" || decryptionStatus === "failed") {
-    if (
-      (encryptedFields & 1 && formatted.to?.toLowerCase() !== zeroAddress) ||
-      (encryptedFields & 2 && formatted.value !== 0n) ||
-      (encryptedFields & 4 && formatted.input !== "0x") ||
-      (encryptedFields & 8 && formatted.accessList?.length !== 0)
-    )
-      throw new EncryptedTransactionError(
-        "invalidResponse",
-        "Concealed fields are not placeholders.",
-      );
-  }
   return {
     ...formatted,
     type: "encrypted",
@@ -128,45 +92,22 @@ function transaction(
   };
 }
 
-type OrdinaryReceipt = Omit<TransactionReceipt, "type"> & {
-  type: Transaction["type"];
+type OrdinaryReceipt = TransactionReceipt & {
+  decryptionStatus?: undefined;
+  failureReason?: undefined;
 };
 
 function receipt(
   rpc: RpcTransactionReceipt | RpcEncryptedReceipt,
 ): OrdinaryReceipt | EncryptedTransactionReceipt {
   if (rpc.type !== "0x8") {
-    const formatted = formatTransactionReceipt(rpc);
-    const type =
-      formatted.type === "legacy"
-        ? "legacy"
-        : formatted.type === "eip2930"
-          ? "eip2930"
-          : formatted.type === "eip1559"
-            ? "eip1559"
-            : formatted.type === "eip4844"
-              ? "eip4844"
-              : formatted.type === "eip7702"
-                ? "eip7702"
-                : undefined;
-    if (!type)
-      throw new EncryptedTransactionError(
-        "invalidResponse",
-        "Unsupported receipt transaction type.",
-      );
-    return { ...formatted, type };
+    return {
+      ...formatTransactionReceipt(rpc),
+      decryptionStatus: undefined,
+      failureReason: undefined,
+    };
   }
   const formatted = formatTransactionReceipt({ ...rpc, type: "0x2" });
-  if (formatted.status !== "success" && formatted.status !== "reverted")
-    throw new EncryptedTransactionError(
-      "invalidResponse",
-      "Invalid receipt status.",
-    );
-  hex(rpc.transactionHash, 32);
-  hex(rpc.blockHash, 32);
-  quantity(rpc.blockNumber, 64);
-  quantity(rpc.gasUsed, 64);
-  quantity(rpc.effectiveGasPrice, 128);
   const decryptionStatus = status(
     "decryptionStatus" in rpc ? rpc.decryptionStatus : undefined,
   );
@@ -180,12 +121,7 @@ function receipt(
       "Invalid encrypted receipt metadata.",
     );
   if (decryptionStatus === "failed") {
-    if (
-      formatted.status !== "reverted" ||
-      !failureReason ||
-      formatted.logs.length ||
-      formatted.contractAddress
-    )
+    if (formatted.status !== "reverted" || !failureReason)
       throw new EncryptedTransactionError(
         "invalidResponse",
         "Invalid failed-decryption receipt.",

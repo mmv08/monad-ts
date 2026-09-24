@@ -12,12 +12,30 @@ Public runtime exports are `sendEncryptedTransaction`, `encryptedWalletActions`,
 
 1. `sendEncryptedTransaction.ts` validates plaintext locally and copies nested access lists before awaiting reads. It requires explicit gas and a local viem account. It uses viem for chain ID, fees, pending nonce/nonce-manager handling, signing, and raw submission.
 2. `context.ts` validates one key/epoch/availability snapshot from the internal RPC or an injected provider. BTX checks the key's group encoding; the provider remains responsible for authenticity.
-3. `codec.ts` encodes selected real fields with Ox RLP, substitutes placeholders, builds the skeleton digest and versioned sender AD, and serializes type 8. Integer widths, shape, canonicality, signatures, and a finite 128 KiB reference limit are checked here. An iterative length scan bounds RLP nesting before Ox decodes it.
+3. `codec.ts` encodes selected real fields with Ox RLP, substitutes placeholders, builds the skeleton digest and versioned sender AD, and serializes type 8. Viem's integer encoder enforces wire widths and its access-list serializer checks addresses/storage-key widths. The received-byte parser checks shape, canonicality, mask, placeholders, and a finite 128 KiB reference limit. An iterative length scan bounds RLP nesting before Ox decodes it.
 4. BTX receives owned byte arrays for plaintext, key, and AD. It supplies padding and secure randomness. No testing entry enters sender code.
-5. The local account signs through viem's custom serializer. The action verifies the returned envelope and recovered sender before making one `eth_sendRawTransaction` request. Ambiguous failures carry the locally computed hash and RPC cause.
+5. The local account signs through viem's custom serializer. As in viem, the configured local signer is trusted; the action does not parse and recover its output. The action checks final byte size and makes one `eth_sendRawTransaction` request. Ambiguous failures carry the locally computed hash and RPC cause. Signature scalar ranges, low-s, and recovery belong to mock/node admission, not serialization.
 6. `formatters.ts` installs transaction, receipt, and full-block handling through viem's existing chain configuration. Query views never replace original signed bytes. Decryption outcomes are explicit, so legitimate placeholder-valued payloads remain valid.
 
-Default preparation never simulates, estimates gas, creates access lists, or calls `eth_fillTransaction`. There is no plaintext fallback. Requests, routine errors, and logs do not include plaintext. Built-in fallback submission is rejected; custom transports must not retry writes. Read retries use viem's request machinery with a budget of two.
+### Validation ownership
+
+The review used installed viem 2.47.0, Ox 0.14.0, and the workspace BTX implementation. TypeScript types describe inputs and outputs; as in viem, ordinary RPC responses are not full runtime-schema-validated objects.
+
+| Area | Existing behavior | ETX responsibility |
+| --- | --- | --- |
+| Local signer | Viem `sendTransaction` calls the configured account and trusts its signed bytes. Its built-in signer uses noble with `lowS: true`. | Require a local account; pass the serializer. No output parse/recovery or curve-order constant in sender code. |
+| Signature encoding | Viem's `toYParitySignatureArray` trims fields without scalar/low-s checks. Ox `Signature.toTuple` does the same encoding. | Use Ox's tuple encoder. Mock admission constructs a noble signature once, checks `hasHighS`, and recovers with it. |
+| Transaction integers | Viem `toHex(value, { size })` rejects negative and overflowing values. | Set PDF widths (8/16/32 bytes) at encoding; check resolved fee ordering once. Keep safe-number checks for caller/custom nonce-manager values. |
+| Access lists | Viem's public `serializeAccessList` checks addresses and 32-byte storage keys. | Reuse it. The received-byte decoder still checks nested shape and exact widths. |
+| Padding/key math | BTX validates padded length, plaintext capacity, key width/group membership, and randomness. | Keep the coherent context shape/epoch/key-width boundary and the adapter's finite size cap. Do not repeat padding validity or key-group checks. |
+| RLP | Ox handles hex conversion and byte bounds, but accepts trailing bytes and some noncanonical lengths and has no nesting cap. | Keep a bounded scan before recursive decoding and one decode/re-encode equality check. No second full-envelope round trip. Keep minimal integer and field-shape checks. |
+| Ordinary RPC fields | Viem formatters normalize fields; `hexToNumber` rejects unsafe numbers. They do not validate transaction admission rules. | Delegate hash/address/signature/fee/gas/value/receipt fields directly. No second numeric conversion or placeholder-content validation in formatters. |
+| ETX RPC metadata | Viem has no epoch/mask/context/decryption schema. | Validate context and new metadata; derive concealed field names from the mask; require the failure reason/status promised by the receipt union. Preserve unknown ordinary receipt types, as viem does. |
+| Preparation/submission | General viem preparation can reveal plaintext. Raw submission already disables retries. | Require gas, reject unsupported ETX fields, enforce chain match, finish public fields before encryption, check final size and returned hash, and retain single-attempt submission/error handling. |
+
+`context.ts` retains its validation because neither viem nor BTX validates an atomic epoch/key/availability response. `decorator.ts` adds no validation; `types.ts` adds only compile-time constraints. The example HTTP server validates its JSON-RPC boundary, while the test mock retains admission checks even though client serialization is more permissive.
+
+Default preparation never simulates, estimates gas, creates access lists, or calls `eth_fillTransaction`. There is no plaintext fallback or routine logging. The action does not attach the plaintext request to errors; errors from underlying encoding helpers may name the invalid field value. Built-in fallback submission is rejected; custom transports must not retry writes. Read retries use viem's request machinery with a budget of two.
 
 ### Dependencies, testing, and open specification details
 

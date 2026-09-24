@@ -94,7 +94,8 @@ test("unavailable context and invalid local input never submit", async () => {
   });
   mock.calls.length = 0;
   await expect(
-    wallet.sendEncryptedTransaction({ ...request, gas: -1n }),
+    // @ts-expect-error An untyped caller must not trigger automatic estimation.
+    wallet.sendEncryptedTransaction({ ...request, gas: undefined }),
   ).rejects.toMatchObject({ code: "invalidInput" });
   expect(mock.calls).toHaveLength(0);
 });

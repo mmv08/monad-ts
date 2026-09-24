@@ -6,6 +6,8 @@
 
 **Implementation choices:** the chain configuration export is `encryptedFormatters`, used with viem's existing `defineChain`; no `withEncryptedTransactions` helper was needed. The public action and decorator are `sendEncryptedTransaction` and `encryptedWalletActions`. Gas is required. Context injection remains one option. The codec stays in one module, and tests/mock/examples live outside sender code. Ordinary transactions use viem's formatters; chains with other custom response shapes must compose their own configuration explicitly. The finite reference transaction-size limit is 128 KiB. Managed nonce gaps after a failed local signing attempt require caller reconciliation; shared nonce state is not reset automatically.
 
+**Validation review:** [ARCHITECTURE.md](./ARCHITECTURE.md) records the final validation boundaries. The sender now follows viem's trusted local-account convention, without parsing/recovering signer output. Signature serialization only encodes; mock/node admission enforces scalar ranges and low-s. Ordinary RPC fields use viem formatting, while ETX context/metadata retain their own checks. This supersedes the broader validation proposed below.
+
 **Authority:** [parent delivery plan](../../../encrypted-transactions-plan.md), especially Phase 2 and section 7; [protocol PDF](../../../encrypted_txs_specs_wip.pdf), pp. 15–25 and 46–47. These files live beside the `monad-ts` checkout. Protocol changes must update the codec, fixtures, and this plan together.
 
 ## 1. Recommendation

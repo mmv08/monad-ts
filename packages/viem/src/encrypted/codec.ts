@@ -1,4 +1,5 @@
 import * as Rlp from "ox/Rlp";
+import * as SignatureEncoding from "ox/Signature";
 import {
   type AccessList,
   type Address,
@@ -6,8 +7,11 @@ import {
   type Hex,
   keccak256,
   type Signature,
+  serializeAccessList,
   serializeTransaction as serializeViemTransaction,
   type TransactionSerializable,
+  toHex,
+  trim,
   zeroAddress,
 } from "viem";
 import { assertInput } from "./errors.js";
@@ -17,8 +21,6 @@ import type { EncryptedField } from "./types.js";
 // This finite limit is the internal reference backend's policy, not a mainnet claim.
 export const MAX_TRANSACTION_BYTES = 128 * 1024;
 export const fields = ["to", "value", "data", "accessList"] as const;
-const secp256k1Order =
-  0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
 
 export type Payload = {
   to: Address | null;
@@ -91,36 +93,23 @@ export function selectedFields(mask: number): EncryptedField[] {
   return fields.filter((_, index) => mask & (1 << index));
 }
 
-function integer(value: bigint): Hex {
-  if (value === 0n) return "0x";
-  const digits = value.toString(16);
-  return `0x${digits.length % 2 ? "0" : ""}${digits}`;
+function integer(value: bigint, size: number): Hex {
+  // Viem enforces unsigned width; RLP uses minimal bytes and empty for zero.
+  const encoded = trim(toHex(value, { size }));
+  return encoded === "0x00" ? "0x" : encoded;
 }
 
-function accessListValues(accessList: AccessList): RlpValue[] {
-  assertInput(Array.isArray(accessList), "Invalid access list.");
-  return accessList.map(({ address, storageKeys }) => {
-    hex(address, 20);
-    assertInput(Array.isArray(storageKeys), "Invalid storage keys.");
-    for (const key of storageKeys) hex(key, 32);
-    return [address, [...storageKeys]];
-  });
-}
-
-export function payloadValues(payload: Payload): RlpValue[] {
+function payloadValues(payload: Payload): RlpValue[] {
   if (payload.to !== null) hex(payload.to, 20);
-  uint(payload.value, 256);
-  hex(payload.data);
   return [
     payload.to ?? "0x",
-    integer(payload.value),
+    integer(payload.value, 32),
     payload.data,
-    accessListValues(payload.accessList),
+    serializeAccessList(payload.accessList),
   ];
 }
 
 export function encodePayload(payload: Payload, mask: number): Hex {
-  selectedFields(mask);
   return Rlp.fromHex(
     payloadValues(payload).filter((_, index) => mask & (1 << index)),
   );
@@ -183,7 +172,6 @@ function decodeAccessList(value: RlpValue): AccessList {
 }
 
 function decodeList(raw: Hex): readonly RlpValue[] {
-  hex(raw);
   assertInput(
     raw.length / 2 - 1 <= MAX_TRANSACTION_BYTES,
     "Transaction exceeds the reference size limit.",
@@ -208,13 +196,9 @@ function decodeList(raw: Hex): readonly RlpValue[] {
     let length = prefix - base;
     if (length > 55) {
       const width = length - 55;
-      assertInput(
-        width <= 4 && offset + width <= size && byte(offset) !== 0,
-        "Invalid RLP length.",
-      );
+      assertInput(width <= 4 && offset + width <= size, "Invalid RLP length.");
       length = 0;
       for (let i = 0; i < width; i++) length = length * 256 + byte(offset++);
-      assertInput(length >= 56, "Noncanonical RLP length.");
     }
     const end = offset + length;
     assertInput(
@@ -258,55 +242,17 @@ export function decodePayload(raw: Hex, envelope: Envelope): Payload {
 }
 
 function envelopeValues(envelope: Envelope): RlpValue[] {
-  for (const value of [
-    envelope.chainId,
-    envelope.nonce,
-    envelope.gas,
-    envelope.epoch,
-  ])
-    uint(value, 64);
-  uint(envelope.maxPriorityFeePerGas, 128);
-  uint(envelope.maxFeePerGas, 128);
-  assertInput(
-    envelope.chainId > 0n &&
-      envelope.maxPriorityFeePerGas <= envelope.maxFeePerGas,
-    "Invalid chain ID or fee caps.",
-  );
-  selectedFields(envelope.encryptedFields);
-  hex(envelope.ciphertext);
-  const placeholders = conceal(envelope, envelope.encryptedFields);
-  assertInput(
-    envelope.to?.toLowerCase() === placeholders.to?.toLowerCase() &&
-      envelope.value === placeholders.value &&
-      envelope.data === placeholders.data &&
-      (!(envelope.encryptedFields & 8) || envelope.accessList.length === 0),
-    "Concealed fields must use their placeholders.",
-  );
   return [
-    integer(envelope.chainId),
-    integer(envelope.nonce),
-    integer(envelope.maxPriorityFeePerGas),
-    integer(envelope.maxFeePerGas),
-    integer(envelope.gas),
+    integer(envelope.chainId, 8),
+    integer(envelope.nonce, 8),
+    integer(envelope.maxPriorityFeePerGas, 16),
+    integer(envelope.maxFeePerGas, 16),
+    integer(envelope.gas, 8),
     ...payloadValues(envelope),
-    integer(envelope.epoch),
-    integer(BigInt(envelope.encryptedFields)),
+    integer(envelope.epoch, 8),
+    integer(BigInt(envelope.encryptedFields), 1),
     envelope.ciphertext,
   ];
-}
-
-function signatureValues(signature: Signature): Hex[] {
-  const r = BigInt(signature.r);
-  const s = BigInt(signature.s);
-  assertInput(
-    (signature.yParity === 0 || signature.yParity === 1) &&
-      r > 0n &&
-      r < secp256k1Order &&
-      s > 0n &&
-      s <= secp256k1Order / 2n,
-    "Invalid transaction signature.",
-  );
-  return [integer(BigInt(signature.yParity)), integer(r), integer(s)];
 }
 
 // TODO(spec): Ethereum typed-envelope RLP/signature suffix is the reference wire interpretation.
@@ -314,18 +260,21 @@ export function serializeEnvelope(
   envelope: Envelope,
   signature?: Signature,
 ): Hex {
-  const raw = concatHex([
+  return concatHex([
     "0x08",
     Rlp.fromHex([
       ...envelopeValues(envelope),
-      ...(signature ? signatureValues(signature) : []),
+      ...(signature
+        ? SignatureEncoding.toTuple({
+            r: BigInt(signature.r),
+            s: BigInt(signature.s),
+            yParity:
+              signature.yParity ??
+              (signature.v === 1n || signature.v === 28n ? 1 : 0),
+          })
+        : []),
     ]),
   ]);
-  assertInput(
-    raw.length / 2 - 1 <= MAX_TRANSACTION_BYTES,
-    "Transaction exceeds the reference size limit.",
-  );
-  return raw;
 }
 
 /** The ordinary union is required by viem's local-account serializer contract. */
@@ -339,7 +288,6 @@ export function serializeTransaction(
 }
 
 export function associatedData(envelope: Envelope, sender: Address): Hex {
-  hex(sender, 20);
   const digest = keccak256(
     serializeEnvelope({ ...envelope, ciphertext: "0x" }),
   );
@@ -350,7 +298,6 @@ export function parseEnvelope(raw: Hex): {
   envelope: Envelope;
   signature: Signature;
 } {
-  hex(raw);
   assertInput(
     raw.length / 2 - 1 <= MAX_TRANSACTION_BYTES,
     "Transaction exceeds the reference size limit.",
@@ -372,6 +319,22 @@ export function parseEnvelope(raw: Hex): {
     encryptedFields: Number(decodeInteger(values[10], 8)),
     ciphertext: bytes(values[11]),
   };
+  // Received envelopes need semantic checks; locally constructed ones already
+  // got their mask from maskFor and placeholders from conceal.
+  selectedFields(envelope.encryptedFields);
+  assertInput(
+    envelope.chainId > 0n &&
+      envelope.maxPriorityFeePerGas <= envelope.maxFeePerGas,
+    "Invalid chain ID or fee caps.",
+  );
+  const placeholders = conceal(envelope, envelope.encryptedFields);
+  assertInput(
+    envelope.to === placeholders.to &&
+      envelope.value === placeholders.value &&
+      envelope.data === placeholders.data &&
+      (!(envelope.encryptedFields & 8) || envelope.accessList.length === 0),
+    "Concealed fields must use their placeholders.",
+  );
   const parity = decodeInteger(values[12], 8);
   assertInput(parity === 0n || parity === 1n, "Invalid signature parity.");
   const signature: Signature = {
@@ -379,9 +342,6 @@ export function parseEnvelope(raw: Hex): {
     r: `0x${decodeInteger(values[13], 256).toString(16).padStart(64, "0")}`,
     s: `0x${decodeInteger(values[14], 256).toString(16).padStart(64, "0")}`,
   };
-  assertInput(
-    serializeEnvelope(envelope, signature).toLowerCase() === raw.toLowerCase(),
-    "Noncanonical transaction.",
-  );
+  // decodeList checks canonical RLP; decodeInteger checks minimal integer bytes.
   return { envelope, signature };
 }

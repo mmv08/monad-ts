@@ -67,7 +67,7 @@ The standalone `sendEncryptedTransaction(client, parameters, options?)` calls th
 - `paddedLength` overrides BTX's 256-byte rounding. It excludes the four-byte encrypted length prefix. Exact-fit padding is allowed.
 - Nonce, chain ID, and fee caps can be supplied; otherwise the action uses viem public reads. Nonce and chain ID must fit JavaScript safe integers; the internal wire codec supports full u64 values.
 - Gas estimation is never automatic. Estimate separately only on a node you trust with the plaintext, then pass `gas`.
-- Local private-key/HD accounts work, including viem nonce managers. JSON-RPC wallets are unsupported. A custom local signer must honor viem's serializer contract.
+- Local private-key/HD accounts work, including viem nonce managers. JSON-RPC wallets are unsupported. A custom local signer must honor viem's serializer contract; the action trusts its output, as viem does.
 - The formatters support ordinary Ethereum transactions and ETX. On a chain with custom response formatters, explicitly compose its custom behavior; do not silently overwrite it.
 
 ## Context and errors
@@ -92,6 +92,8 @@ Pending queries show placeholders and concealed-field markers. Decrypted queries
 
 Receipt decryption status and execution status are separate. Disable viem's replacement classification when waiting: concealed fields cannot establish whether another transaction changed the same intent. The mock drops expired pending transactions without a receipt; included failures use scripted full-gas-limit charges and nonce consumption.
 
+Validation follows viem's boundaries: encoding enforces wire widths, BTX enforces padding and key validity, and formatters normalize ordinary RPC fields rather than repeating admission. Context and added ETX metadata have their own checks. Signature range/low-s checks run at mock/node admission, not serialization. See the validation ownership table in [ARCHITECTURE.md](./ARCHITECTURE.md).
+
 The regression vector is self-generated, not independent compatibility evidence. Regenerate it after an intentional wire change:
 
 ```sh
@@ -103,7 +105,7 @@ Anvil EVM execution and comparison with a compatible node remain later phases.
 ## Verification recorded for this change
 
 - Workspace build and type checks passed.
-- 39 offline ETX tests passed, including compiled package imports and Node signing.
+- Offline ETX tests cover compiled package imports, Node signing, permissive signature serialization, and strict mock admission.
 - The browser HTTP example encrypted and signed locally in headless Chrome and received a scripted success receipt.
 - Focused Biome checks passed. The root lint command encountered existing nested Biome configurations in `.claude/worktrees/`.
-- Coverage was measured without changing the repository's thresholds. Sender source functions reached 100%; formatter source lines reached 98.29% (the remaining guard checks viem's own formatter discriminator). The combined report also includes partially exercised BTX source/build files and compiled consumer modules, so its aggregate is not a sender-only coverage figure.
+- Coverage reports include both source and compiled consumer modules as well as BTX; their aggregate is not a sender-only coverage figure. The repository's thresholds are unchanged.

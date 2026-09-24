@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { encrypt, serializeCiphertext } from "@monad-crypto/btx";
 import { createTestKey } from "@monad-crypto/btx/testing";
+import { noble as secp256k1 } from "ox/Secp256k1";
 import {
   bytesToHex,
   createPublicClient,
@@ -9,6 +10,7 @@ import {
   hexToBytes,
   keccak256,
   nonceManager,
+  toHex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import {
@@ -16,6 +18,8 @@ import {
   conceal,
   type Envelope,
   hex,
+  parseEnvelope,
+  serializeEnvelope,
   serializeTransaction,
 } from "../../src/encrypted/codec.js";
 import { parseContext } from "../../src/encrypted/context.js";
@@ -59,7 +63,7 @@ test("context validates shape and legacy numeric epochs", () => {
     expect(() => parseContext(value)).toThrow();
 });
 
-test("managed nonces, overrides and malformed signer output", async () => {
+test("managed nonces, overrides and viem's trusted local-signer convention", async () => {
   const mock = createMock();
   const managed = privateKeyToAccount(`0x${"02".repeat(32)}`, { nonceManager });
   const wallet = createWalletClient({
@@ -83,10 +87,14 @@ test("managed nonces, overrides and malformed signer output", async () => {
   expect(mock.transaction(hash)?.nonce).toBe("0xa");
   const raw = mock.raw(hash);
   if (!raw) throw new Error("Expected signed bytes");
-  const broken = { ...account, signTransaction: async () => raw };
-  await expect(
-    wallet.sendEncryptedTransaction({ ...request, account: broken, nonce: 11 }),
-  ).rejects.toMatchObject({ code: "unsupportedSigner" });
+  const customSigner = { ...account, signTransaction: async () => raw };
+  expect(
+    await wallet.sendEncryptedTransaction({
+      ...request,
+      account: customSigner,
+      nonce: 11,
+    }),
+  ).toBe(hash);
 });
 
 test("JSON-RPC account fails at runtime and malformed JS fields fail locally", async () => {
@@ -205,4 +213,62 @@ test("ordinary serialization and formatting still work", async () => {
     }),
   });
   await expect(client.getTransaction({ hash })).rejects.toThrow();
+});
+
+test("serialization accepts signature bytes; mock admission enforces secp256k1 and low-s", async () => {
+  const mock = createMock();
+  const wallet = createWalletClient({
+    chain,
+    account,
+    transport: mock.transport,
+  });
+  const hash = await sendEncryptedTransaction(wallet, request);
+  const raw = mock.raw(hash);
+  if (!raw) throw new Error("Expected signed bytes");
+  const { envelope, signature } = parseEnvelope(raw);
+  const highS = secp256k1.CURVE.n - BigInt(signature.s);
+  for (const invalidSignature of [
+    { ...signature, r: toHex(0n, { size: 32 }) },
+    { ...signature, r: toHex(secp256k1.CURVE.n, { size: 32 }) },
+    { ...signature, s: toHex(0n, { size: 32 }) },
+    {
+      ...signature,
+      s: toHex(highS, { size: 32 }),
+      yParity: signature.yParity === 0 ? (1 as const) : (0 as const),
+    },
+  ]) {
+    const encoded = serializeEnvelope(envelope, invalidSignature);
+    expect(parseEnvelope(encoded).signature).toEqual(invalidSignature);
+    await expect(
+      mock.request({ method: "eth_sendRawTransaction", params: [encoded] }),
+    ).rejects.toThrow();
+  }
+});
+
+test("encoding and BTX still reject invalid widths, access lists, and padding", async () => {
+  const mock = createMock();
+  const wallet = createWalletClient({
+    chain,
+    account,
+    transport: mock.transport,
+  });
+  for (const parameters of [
+    { ...request, gas: -1n },
+    { ...request, gas: 1n << 64n },
+    { ...request, value: 1n << 256n },
+    { ...request, maxFeePerGas: 1n << 128n },
+    { ...request, paddedLength: -1 },
+    { ...request, paddedLength: 1.5 },
+    { ...request, paddedLength: 0 },
+    {
+      ...request,
+      accessList: [{ address: to, storageKeys: ["0x01"] }] as const,
+    },
+  ])
+    await expect(
+      sendEncryptedTransaction(wallet, parameters),
+    ).rejects.toThrow();
+  expect(
+    mock.calls.some(({ method }) => method === "eth_sendRawTransaction"),
+  ).toBe(false);
 });

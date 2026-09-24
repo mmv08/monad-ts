@@ -25,12 +25,8 @@ test("malformed query metadata never becomes a typed valid result", async () => 
     { encrypted: false },
     { concealedFields: [] },
     { concealedFields: ["to", "value", "nonce", "accessList"] },
-    { to: "0x1111111111111111111111111111111111111111" },
-    { value: "0x1" },
-    { input: "0x1234" },
     { chainId: "0x20000000000000" },
     { epoch: "0x01" },
-    { maxFeePerGas: "0x0" },
   ])
     await expect(
       transactionClient(overrides).getTransaction({ hash }),
@@ -56,18 +52,10 @@ test("malformed query metadata never becomes a typed valid result", async () => 
       }),
     });
   for (const overrides of [
-    { type: "0x9" },
-    { status: "0x3" },
     { decryptionStatus: "pending" },
     { failureReason: 1 },
     { decryptionStatus: "failed", failureReason: "decryptionFailed" },
     { decryptionStatus: "failed", status: "0x0" },
-    {
-      decryptionStatus: "failed",
-      status: "0x0",
-      failureReason: "decryptionFailed",
-      contractAddress: "0x1111111111111111111111111111111111111111",
-    },
   ])
     await expect(
       receiptClient(overrides).getTransactionReceipt({ hash }),
@@ -77,4 +65,14 @@ test("malformed query metadata never becomes a typed valid result", async () => 
       hash,
     }),
   ).toMatchObject({ decryptionStatus: "unknown" });
+  // Queries normalize ordinary fields; they do not rerun transaction admission.
+  expect(
+    await transactionClient({
+      value: "0x1",
+      maxFeePerGas: "0x0",
+    }).getTransaction({ hash }),
+  ).toMatchObject({ value: 1n, maxFeePerGas: 0n });
+  expect(
+    await receiptClient({ type: "0x9" }).getTransactionReceipt({ hash }),
+  ).toMatchObject({ type: "0x9", decryptionStatus: undefined });
 });

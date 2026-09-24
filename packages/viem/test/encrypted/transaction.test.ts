@@ -149,7 +149,6 @@ describe("type-8 codec", () => {
     expect(() =>
       encodePayload({ ...payload, value: 1n << 256n }, 15),
     ).toThrow();
-    expect(() => serializeEnvelope({ ...base, to: target })).toThrow();
     const raw = await account.signTransaction(base, {
       serializer: serializeTransaction,
     });
@@ -163,13 +162,29 @@ describe("type-8 codec", () => {
       expect(() => parseEnvelope(invalid)).toThrow();
     const parsed = parseEnvelope(raw);
     expect(() =>
+      parseEnvelope(
+        serializeEnvelope({ ...base, to: target }, parsed.signature),
+      ),
+    ).toThrow();
+    expect(() =>
       serializeEnvelope(base, {
         ...parsed.signature,
         s: `0x${"ff".repeat(32)}`,
       }),
-    ).toThrow();
+    ).not.toThrow();
     expect(() =>
       decodePayload("0xc100", { ...base, encryptedFields: 2 }),
     ).toThrow();
+    // Ox decodes these aliases/trailing bytes; the ETX wire boundary rejects them.
+    for (const encoded of [
+      "0xf80180",
+      "0xf9000180",
+      "0xc28101",
+      "0xc18000",
+    ] as const) {
+      expect(() =>
+        decodePayload(encoded, { ...base, encryptedFields: 2 }),
+      ).toThrow();
+    }
   });
 });
