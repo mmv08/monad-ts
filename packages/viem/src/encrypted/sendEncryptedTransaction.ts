@@ -9,7 +9,6 @@ import {
   type Hash,
   type Hex,
   hexToBytes,
-  InvalidAddressError,
   keccak256,
   MaxFeePerGasTooLowError,
   type Transport,
@@ -59,7 +58,13 @@ export async function sendEncryptedTransaction<
       "A local secp256k1 account is required.",
     );
   // An omitted recipient must never become contract creation; that takes `to: null`.
-  if (to !== null && !to) throw new InvalidAddressError({ address: to });
+  if (to !== null && !to)
+    throw new EncryptedTransactionError(
+      "invalidInput",
+      "Set `to`, or `to: null` to create a contract.",
+    );
+  // As in viem's sendTransaction. It is the only check on an encrypted `to`:
+  // the serializer sees the placeholder.
   assertRequest({ ...parameters, account });
   const payload: Payload = {
     to,

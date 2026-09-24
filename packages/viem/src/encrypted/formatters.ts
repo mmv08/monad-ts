@@ -1,7 +1,8 @@
 import {
-  formatBlock,
-  formatTransaction,
-  formatTransactionReceipt,
+  type Block,
+  defineBlock,
+  defineTransaction,
+  defineTransactionReceipt,
   type Hex,
   type RpcBlock,
   type RpcTransaction,
@@ -37,66 +38,46 @@ type OrdinaryReceipt = TransactionReceipt & {
   failureReason?: undefined;
 };
 
-// Like viem's own formatters, these convert fields and do not validate them.
-function transaction(
-  rpc: RpcTransaction | RpcEncryptedTransaction,
-): Transaction | EncryptedTransaction {
-  if (rpc.type !== "0x8") return formatTransaction(rpc);
-  // Viem returns the entire Transaction union even for a literal 0x2 input.
-  const formatted = formatTransaction({ ...rpc, type: "0x2" }) as Extract<
-    Transaction,
-    { type: "eip1559" }
-  >;
-  const encryptedFields = Number(rpc.encryptedFields);
-  return {
-    ...formatted,
-    type: "encrypted",
-    typeHex: "0x8",
-    epoch: BigInt(rpc.epoch),
-    encryptedFields,
-    ciphertext: rpc.ciphertext,
-    concealedFields: selectedFields(encryptedFields),
-    decryptionStatus: rpc.decryptionStatus,
-  };
-}
-
-function receipt(
-  rpc: RpcReceipt,
-): OrdinaryReceipt | EncryptedTransactionReceipt {
-  if (rpc.type !== "0x8") return formatTransactionReceipt(rpc);
-  return {
-    ...formatTransactionReceipt(rpc),
-    type: "encrypted",
-    decryptionStatus: rpc.decryptionStatus,
-    failureReason: rpc.failureReason,
-  };
-}
+// As for viem's OP Stack deposits, viem's formatter runs first and keeps the
+// keys it does not know, so this adds only the ETX conversions. Like viem's
+// formatters, these convert fields and do not validate them.
+const transaction = /*#__PURE__*/ defineTransaction({
+  format(
+    rpc: RpcTransaction | RpcEncryptedTransaction,
+  ): Transaction | EncryptedTransaction {
+    const etx = {} as EncryptedTransaction;
+    if (rpc.type === "0x8") {
+      etx.type = "encrypted";
+      etx.epoch = BigInt(rpc.epoch);
+      etx.encryptedFields = Number(rpc.encryptedFields);
+      etx.concealedFields = selectedFields(etx.encryptedFields);
+    }
+    return etx;
+  },
+});
 
 /** Use with viem's defineChain to retain ETX types in ordinary query actions. */
 export const encryptedFormatters = {
-  // `exclude: []` gives each formatter the shape viem's defineFormatter returns.
-  // Without a key beyond `type` and `format`, viem ignores these return types.
-  transaction: { type: "transaction", exclude: [], format: transaction },
-  transactionReceipt: {
-    type: "transactionReceipt",
-    exclude: [],
-    format: receipt,
-  },
-  block: {
-    type: "block",
-    exclude: [],
+  block: /*#__PURE__*/ defineBlock({
     format(
       rpc: Omit<RpcBlock, "transactions"> & {
         transactions: (RpcTransaction | RpcEncryptedTransaction | Hex)[];
       },
-    ) {
-      // Viem's block formatter calls its own transaction formatter, so map full transactions here.
+    ): Block {
+      // Viem's block formatter calls its own transaction formatter.
       return {
-        ...formatBlock({ ...rpc, transactions: [] }),
         transactions: rpc.transactions.map((value) =>
-          typeof value === "string" ? value : transaction(value),
+          typeof value === "string" ? value : transaction.format(value),
         ),
-      };
+      } as Block;
     },
-  },
+  }),
+  transaction,
+  transactionReceipt: /*#__PURE__*/ defineTransactionReceipt({
+    format(rpc: RpcReceipt): OrdinaryReceipt | EncryptedTransactionReceipt {
+      return (
+        rpc.type === "0x8" ? { type: "encrypted" } : {}
+      ) as EncryptedTransactionReceipt;
+    },
+  }),
 } as const;

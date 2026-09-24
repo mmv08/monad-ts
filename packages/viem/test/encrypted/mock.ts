@@ -22,7 +22,10 @@ import {
   selectedFields,
   serializeEnvelope,
 } from "../../src/encrypted/codec.js";
-import { encryptedFormatters } from "../../src/encrypted/index.js";
+import {
+  type DecryptionStatus,
+  encryptedFormatters,
+} from "../../src/encrypted/index.js";
 
 export const chain = defineChain({
   id: 1337,
@@ -40,10 +43,9 @@ type Entry = {
   signature: Signature.Signature;
   sender: Address;
   ad: Hex;
-  status: "pending" | "succeeded" | "failed";
+  status: DecryptionStatus;
   payload?: Payload;
   block?: bigint;
-  failureReason?: string;
 };
 
 /** A rejection in the ETX RPC's shape: -32000 with a machine-readable reason. */
@@ -55,8 +57,7 @@ function rpcError(reason: string) {
 }
 
 // Received-byte decoding belongs to this test backend, not the sender library.
-// Like viem's parseTransaction, it requires every field and a parity of 0 or 1;
-// admission checks the rest.
+// It requires every field and a parity of 0 or 1; admission checks the rest.
 const quantity = (value: Hex) => (value === "0x" ? 0n : hexToBigInt(value));
 const recipient = (value: Hex) => (value === "0x" ? null : value);
 const accessList = (value: unknown) =>
@@ -64,9 +65,7 @@ const accessList = (value: unknown) =>
 
 async function parseEnvelope(raw: Hex) {
   try {
-    if (!raw.startsWith("0x08")) throw new Error("Not a type-8 envelope");
     const values = Rlp.toHex(`0x${raw.slice(4)}`) as Hex[];
-    if (values.length !== 15) throw new Error("Wrong field count");
     const [
       chainId,
       nonce,
@@ -110,32 +109,23 @@ async function parseEnvelope(raw: Hex) {
   }
 }
 
-/** Restores every selected field, or none when the payload does not match the mask. */
-function decodePayload(
-  plaintext: Hex,
-  envelope: Envelope,
-): Payload | undefined {
-  try {
-    const values = Rlp.toHex(plaintext);
-    const selected = selectedFields(envelope.encryptedFields);
-    if (!Array.isArray(values) || values.length !== selected.length) return;
-    const payload: Payload = {
-      to: envelope.to,
-      value: envelope.value,
-      data: envelope.data,
-      accessList: envelope.accessList,
-    };
-    selected.forEach((field, index) => {
-      const value = values[index] as Hex;
-      if (field === "to") payload.to = recipient(value);
-      else if (field === "value") payload.value = quantity(value);
-      else if (field === "data") payload.data = value;
-      else payload.accessList = accessList(value);
-    });
-    return payload;
-  } catch {
-    return;
-  }
+/** Restores the selected fields from a decrypted payload. */
+function decodePayload(plaintext: Hex, envelope: Envelope): Payload {
+  const values = Rlp.toHex(plaintext) as Hex[];
+  const payload: Payload = {
+    to: envelope.to,
+    value: envelope.value,
+    data: envelope.data,
+    accessList: envelope.accessList,
+  };
+  selectedFields(envelope.encryptedFields).forEach((field, index) => {
+    const value = values[index] as Hex;
+    if (field === "to") payload.to = recipient(value);
+    else if (field === "value") payload.value = quantity(value);
+    else if (field === "data") payload.data = value;
+    else payload.accessList = accessList(value);
+  });
+  return payload;
 }
 
 /** Test-only, single-trapdoor backend. Receipts are scripted, never EVM execution. */
@@ -188,9 +178,7 @@ export function createMock() {
         case "eth_sendRawTransaction": {
           const raw = args[0] as Hex;
           const { envelope, signature, sender } = await parseEnvelope(raw);
-          if (envelope.chainId !== chain.id) throw rpcError("chainIdMismatch");
-          if (!mock.available || envelope.epoch !== mock.epoch)
-            throw rpcError("expiredEpoch");
+          if (envelope.epoch !== mock.epoch) throw rpcError("expiredEpoch");
           // The binding uses the recovered sender, so another signer fails the proof.
           const ad = associatedData(envelope, sender);
           try {
@@ -199,14 +187,13 @@ export function createMock() {
             throw rpcError("invalidProof");
           }
           const hash = keccak256(raw);
-          if (!entries.has(hash))
-            entries.set(hash, {
-              envelope,
-              signature,
-              sender,
-              ad,
-              status: "pending",
-            });
+          entries.set(hash, {
+            envelope,
+            signature,
+            sender,
+            ad,
+            status: "pending",
+          });
           if (mock.failAfterAccept) throw mock.failAfterAccept;
           return hash;
         }
@@ -272,6 +259,7 @@ export function createMock() {
       const entry =
         typeof hash === "string" ? entries.get(hash as Hex) : undefined;
       if (!entry || entry.block === undefined) return null;
+      const failed = entry.status === "failed";
       return {
         transactionHash: hash,
         transactionIndex: "0x0",
@@ -283,16 +271,16 @@ export function createMock() {
         cumulativeGasUsed: toHex(entry.envelope.gas),
         gasUsed: toHex(entry.envelope.gas),
         effectiveGasPrice: "0x2",
-        status: entry.failureReason ? "0x0" : "0x1",
+        status: failed ? "0x0" : "0x1",
         contractAddress: null,
         logs: [],
         logsBloom: bloom,
         decryptionStatus: entry.status,
-        ...(entry.failureReason ? { failureReason: entry.failureReason } : {}),
+        ...(failed ? { failureReason: "decryptionFailed" } : {}),
       };
     },
-    /** Mines a pending entry. `failureReason` scripts an execution failure, such as "reverted". */
-    include(hash: Hex, failureReason?: string) {
+    /** Mines a pending entry, decrypting it with the mock's key. */
+    include(hash: Hex) {
       const entry = entries.get(hash);
       if (!entry || entry.block !== undefined)
         throw new Error("Expected a pending transaction");
@@ -304,7 +292,6 @@ export function createMock() {
         ? decodePayload(bytesToHex(decrypted.plaintext), entry.envelope)
         : undefined;
       entry.status = entry.payload ? "succeeded" : "failed";
-      entry.failureReason = entry.payload ? failureReason : "decryptionFailed";
       entry.block = ++height;
       nonces.set(entry.sender.toLowerCase(), entry.envelope.nonce + 1);
     },

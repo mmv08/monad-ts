@@ -38,18 +38,6 @@ export type SendEncryptedTransactionParameters<
   maxPriorityFeePerGas?: bigint;
   encryptedFields?: readonly [EncryptedField, ...EncryptedField[]];
   paddedLength?: number;
-  gasPrice?: never;
-  blobs?: never;
-  blobVersionedHashes?: never;
-  maxFeePerBlobGas?: never;
-  sidecars?: never;
-  kzg?: never;
-  from?: never;
-  chain?: never;
-  authorizationList?: never;
-  type?: never;
-  ciphertext?: never;
-  epoch?: never;
 } & ({ to: Address; data?: Hex } | { to: null; data: Hex }) &
   ([account] extends [LocalAccount]
     ? { account?: LocalAccount }

@@ -33,20 +33,14 @@ Bun.serve({
       return new Response("Invalid origin", { status: 403 });
     let id: unknown = null;
     try {
-      const body: unknown = await request.json();
-      if (
-        !body ||
-        typeof body !== "object" ||
-        !("method" in body) ||
-        typeof body.method !== "string" ||
-        !("id" in body)
-      )
-        throw new Error("Invalid JSON-RPC request");
+      // A malformed body throws here or in the mock and gets an error reply.
+      const body = (await request.json()) as {
+        id: unknown;
+        method: string;
+        params?: unknown;
+      };
       id = body.id;
-      const result = await mock.request({
-        method: body.method,
-        params: "params" in body ? body.params : undefined,
-      });
+      const result = await mock.request(body);
       // The example mines each accepted transaction at once.
       if (body.method === "eth_sendRawTransaction") mock.include(result as Hex);
       return Response.json({ jsonrpc: "2.0", id, result });

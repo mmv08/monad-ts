@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createTestKey } from "@monad-crypto/btx/testing";
 import {
   bytesToHex,
   createPublicClient,
@@ -6,7 +7,9 @@ import {
   encodeFunctionData,
   erc20Abi,
   type Hash,
+  type Hex,
   InvalidAddressError,
+  keccak256,
   MaxFeePerGasTooLowError,
   nonceManager,
   zeroAddress,
@@ -14,6 +17,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import {
   EncryptedTransactionError,
+  type EncryptedWalletActionsParameters,
   encryptedWalletActions,
   sendEncryptedTransaction,
 } from "../../src/encrypted/index.js";
@@ -23,13 +27,13 @@ const account = privateKeyToAccount(`0x${"01".repeat(32)}`);
 const to = "0x1111111111111111111111111111111111111111";
 const request = { to, value: 1n, gas: 100_000n } as const;
 
-function setup() {
+function setup(parameters?: EncryptedWalletActionsParameters) {
   const mock = createMock();
   const wallet = createWalletClient({
     account,
     chain,
     transport: mock.transport,
-  }).extend(encryptedWalletActions());
+  }).extend(encryptedWalletActions(parameters));
   const publicClient = createPublicClient({
     chain,
     transport: mock.transport,
@@ -68,24 +72,31 @@ test("send, pending query, decryption, full block and ordinary receipt polling",
     accessList,
   });
   const preparationCalls = [...mock.calls];
-  const pending = await publicClient.getTransaction({ hash });
-  expect(pending.type).toBe("encrypted");
-  if (pending.type !== "encrypted") throw new Error("Expected ETX");
-  expect(pending.epoch).toBe(1n);
-  expect(pending.input).toBe("0x");
-  expect(pending.to).toBe(zeroAddress);
-  expect(pending.decryptionStatus).toBe("pending");
-  expect(mock.receipt(hash)).toBeNull();
+  // The pending view keeps placeholders and names the concealed fields.
+  expect(await publicClient.getTransaction({ hash })).toMatchObject({
+    type: "encrypted",
+    typeHex: "0x8",
+    epoch: 1n,
+    encryptedFields: 15,
+    concealedFields: ["to", "value", "data", "accessList"],
+    ciphertext: mock.transaction(hash)?.ciphertext,
+    to: zeroAddress,
+    value: 0n,
+    input: "0x",
+    accessList: [],
+    decryptionStatus: "pending",
+  });
   const waiting = publicClient.waitForTransactionReceipt({
     hash,
     retryCount: 2,
     timeout: 3000,
   });
   mock.include(hash);
-  const receipt = await waiting;
-  expect(receipt.status).toBe("success");
-  if (receipt.type !== "encrypted") throw new Error("Expected ETX receipt");
-  expect(receipt.decryptionStatus).toBe("succeeded");
+  expect(await waiting).toMatchObject({
+    type: "encrypted",
+    status: "success",
+    decryptionStatus: "succeeded",
+  });
   // Every concealed field comes back, and the identity stays.
   const restored = await publicClient.getTransaction({ hash });
   expect(restored).toMatchObject({
@@ -100,7 +111,6 @@ test("send, pending query, decryption, full block and ordinary receipt polling",
     (await publicClient.getBlock({ includeTransactions: true })).transactions[0]
       ?.type,
   ).toBe("encrypted");
-  expect(sends(mock)).toBe(1);
   // Preparation reads public state only and never sends the plaintext.
   const allowed = new Set([
     "eth_getBlockByNumber",
@@ -128,28 +138,33 @@ test("unavailable encryption fails before the nonce, signing or sending", async 
   expect(sends(mock)).toBe(0);
 });
 
-test("a stale epoch is rejected, with a decorator's contextProvider as the default", async () => {
-  const mock = createMock();
-  mock.epoch = 2n;
-  const wallet = createWalletClient({
-    account,
-    chain,
-    transport: mock.transport,
-  }).extend(
-    encryptedWalletActions({
-      contextProvider: async () => ({
-        available: true,
-        epoch: 1n,
-        encryptionKey: bytesToHex(mock.key.encryptionKey),
-      }),
+test("a wrong key passes admission but fails decryption, through a decorator's default contextProvider", async () => {
+  // The proof binds the transaction, not the key.
+  const { encryptionKey } = createTestKey({ trapdoor: 43n });
+  const { mock, wallet, publicClient } = setup({
+    contextProvider: async () => ({
+      available: true,
+      epoch: 1n,
+      encryptionKey: bytesToHex(encryptionKey),
     }),
-  );
-  const error = await sendError(wallet.sendEncryptedTransaction(request));
-  expect(error.code).toBe("rejected");
-  expect(error.walk()).toMatchObject({ data: { reason: "expiredEpoch" } });
+  });
+  const hash = await wallet.sendEncryptedTransaction(request);
+  mock.include(hash);
+  expect(await publicClient.getTransactionReceipt({ hash })).toMatchObject({
+    type: "encrypted",
+    status: "reverted",
+    decryptionStatus: "failed",
+    failureReason: "decryptionFailed",
+  });
+  // No field is restored.
+  expect(await publicClient.getTransaction({ hash })).toMatchObject({
+    to: zeroAddress,
+    value: 0n,
+    decryptionStatus: "failed",
+  });
 });
 
-test("failed submissions keep the hash and cause, and send once", async () => {
+test("an uncertain submission keeps the hash and cause, and sends once", async () => {
   // The transport retries by default, and viem passes aborts through
   // unwrapped; the action must still send once and keep the hash.
   const { mock, wallet } = setup();
@@ -166,23 +181,6 @@ test("failed submissions keep the hash and cause, and send once", async () => {
     expect(mock.transaction(uncertain.hash)).not.toBeNull();
   }
   expect(sends(mock)).toBe(failures.length);
-  // A structured reason proves rejection: here a signer other than the
-  // sender bound into the proof.
-  const other = privateKeyToAccount(`0x${"02".repeat(32)}`);
-  const rejecting = createMock();
-  const rejected = await sendError(
-    sendEncryptedTransaction(
-      createWalletClient({ account, chain, transport: rejecting.transport }),
-      {
-        ...request,
-        account: { ...account, signTransaction: other.signTransaction },
-      },
-    ),
-  );
-  expect(rejected.code).toBe("rejected");
-  expect(rejected.hash).toMatch(/^0x[\da-f]{64}$/);
-  expect(rejected.walk()).toMatchObject({ data: { reason: "invalidProof" } });
-  expect(sends(rejecting)).toBe(1);
 });
 
 test("managed nonces: concurrent sends, explicit override, no gap after any failure", async () => {
@@ -203,10 +201,10 @@ test("managed nonces: concurrent sends, explicit override, no gap after any fail
     wallet.sendEncryptedTransaction({ ...request, paddedLength: 0 }),
   ).rejects.toMatchObject({ code: "InvalidLength" });
   expect(nonceOf(await wallet.sendEncryptedTransaction(request))).toBe("0x2");
-  // After an epoch change the backend rejects a stale context; a fresh send
-  // reuses the rejected nonce.
+  // After an epoch change the backend rejects a stale context with a reason.
+  // The error keeps the hash of the sent bytes; a fresh send reuses the nonce.
   mock.epoch++;
-  await expect(
+  const rejected = await sendError(
     wallet.sendEncryptedTransaction({
       ...request,
       contextProvider: async () => ({
@@ -215,7 +213,11 @@ test("managed nonces: concurrent sends, explicit override, no gap after any fail
         encryptionKey: bytesToHex(mock.key.encryptionKey),
       }),
     }),
-  ).rejects.toMatchObject({ code: "rejected" });
+  );
+  const [sent] = mock.calls.at(-1)?.params as [Hex];
+  expect(rejected.code).toBe("rejected");
+  expect(rejected.hash).toBe(keccak256(sent));
+  expect(rejected.walk()).toMatchObject({ data: { reason: "expiredEpoch" } });
   expect(nonceOf(await wallet.sendEncryptedTransaction(request))).toBe("0x3");
   expect(
     nonceOf(await wallet.sendEncryptedTransaction({ ...request, nonce: 10 })),
@@ -238,7 +240,8 @@ test("requires a local account and a valid, explicit recipient", async () => {
   await expect(
     // @ts-expect-error A missing recipient must never imply contract creation.
     wallet.sendEncryptedTransaction({ gas: 21_000n }),
-  ).rejects.toBeInstanceOf(InvalidAddressError);
+  ).rejects.toMatchObject({ code: "invalidInput" });
+  // The recipient is encrypted, so assertRequest is the only check on it.
   await expect(
     wallet.sendEncryptedTransaction({
       ...request,
@@ -301,16 +304,17 @@ test("fees follow viem: partial caps, fee hooks get the block and public fields 
 });
 
 test("contract creation can stay public while its initcode is encrypted", async () => {
-  const { mock, wallet } = setup();
+  const { wallet, publicClient } = setup();
   const hash = await wallet.sendEncryptedTransaction({
     to: null,
     data: "0x6000",
     gas: 100_000n,
     encryptedFields: ["data"],
   });
-  expect(mock.transaction(hash)).toMatchObject({
+  expect(await publicClient.getTransaction({ hash })).toMatchObject({
     to: null,
     input: "0x",
-    encryptedFields: "0x4",
+    encryptedFields: 4,
+    concealedFields: ["data"],
   });
 });

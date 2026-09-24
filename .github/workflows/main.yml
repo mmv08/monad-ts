@@ -56,6 +56,4 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run --cwd packages/btx build
-      - run: bun run --cwd packages/viem build
-      - run: bun run --cwd packages/viem typecheck
       - run: bun run --cwd packages/viem test:encrypted

@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import * as Rlp from "ox/Rlp";
 import { IntegerOutOfRangeError, InvalidChainIdError, zeroAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import {
@@ -38,44 +37,49 @@ const base: Envelope = {
 };
 
 describe("type-8 codec", () => {
-  // Explicit PDF bit assignments, independent of the codec's field table.
-  for (const [mask, selection] of [
-    [1, ["to"]],
-    [2, ["value"]],
-    [3, ["to", "value"]],
-    [4, ["data"]],
-    [5, ["to", "data"]],
-    [6, ["value", "data"]],
-    [7, ["to", "value", "data"]],
-    [8, ["accessList"]],
-    [9, ["to", "accessList"]],
-    [10, ["value", "accessList"]],
-    [11, ["to", "value", "accessList"]],
-    [12, ["data", "accessList"]],
-    [13, ["to", "data", "accessList"]],
-    [14, ["value", "data", "accessList"]],
-    [15, ["to", "value", "data", "accessList"]],
-  ] as const)
-    test(`mask ${mask}: PDF selection, payload and placeholders`, () => {
-      const selected = new Set<string>(selection);
-      const wireValues = {
-        to: target,
-        value: "0x7b",
-        data: "0x123400",
-        accessList: [[target, [`0x${"01".repeat(32)}`]]],
-      } as const;
+  test("the field bits follow the PDF table", () => {
+    // Explicit PDF bit assignments, independent of the codec's field table.
+    for (const [mask, selection] of [
+      [1, ["to"]],
+      [2, ["value"]],
+      [3, ["to", "value"]],
+      [4, ["data"]],
+      [5, ["to", "data"]],
+      [6, ["value", "data"]],
+      [7, ["to", "value", "data"]],
+      [8, ["accessList"]],
+      [9, ["to", "accessList"]],
+      [10, ["value", "accessList"]],
+      [11, ["to", "value", "accessList"]],
+      [12, ["data", "accessList"]],
+      [13, ["to", "data", "accessList"]],
+      [14, ["value", "data", "accessList"]],
+      [15, ["to", "value", "data", "accessList"]],
+    ] as const) {
       expect(selectedFields(mask)).toEqual([...selection]);
       expect(maskFor(selection)).toBe(mask);
-      expect(conceal(payload, mask)).toEqual({
-        to: selected.has("to") ? zeroAddress : target,
-        value: selected.has("value") ? 0n : 123n,
-        data: selected.has("data") ? "0x" : "0x123400",
-        accessList: selected.has("accessList") ? [] : payload.accessList,
-      });
-      expect(encodePayload(payload, mask)).toBe(
-        Rlp.fromHex(selection.map((field) => wireValues[field])),
-      );
+    }
+  });
+
+  test("a partial mask encodes the selected fields and leaves placeholders", () => {
+    const address = "11".repeat(20);
+    const storageKey = "01".repeat(32);
+    // RLP([to, data]) and RLP([value, accessList]), written out by hand.
+    expect(encodePayload(payload, 5)).toBe(`0xd994${address}83123400`);
+    expect(conceal(payload, 5)).toEqual({
+      ...payload,
+      to: zeroAddress,
+      data: "0x",
     });
+    expect(encodePayload(payload, 10)).toBe(
+      `0xf83b7bf838f794${address}e1a0${storageKey}`,
+    );
+    expect(conceal(payload, 10)).toEqual({
+      ...payload,
+      value: 0n,
+      accessList: [],
+    });
+  });
 
   test("an empty or unknown field selection is rejected, never sent in the clear", () => {
     expect(() => maskFor([])).toThrow(EncryptedTransactionError);

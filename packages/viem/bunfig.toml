@@ -2,3 +2,5 @@
 preload = ["./test/setup.ts"]
 timeout = 30000
 coverageThreshold = 1
+# BTX counts in its own package; fixtures load it from source.
+coveragePathIgnorePatterns = ["**/dist/**", "**/test/**", "../btx/**"]

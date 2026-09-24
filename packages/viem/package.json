@@ -38,7 +38,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "test": "bun test",
+    "test": "bun run build && bun test",
     "test:encrypted": "bun run build && bun test test/encrypted",
     "typecheck": "tsc --noEmit"
   },
