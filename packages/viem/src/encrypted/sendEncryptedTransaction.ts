@@ -6,16 +6,19 @@ import {
 } from "@monad-crypto/btx";
 import {
   type Account,
+  assertCurrentChain,
+  assertRequest,
   BaseError,
   bytesToHex,
   type Chain,
   type Client,
-  createClient,
-  custom,
+  type EIP1193Parameters,
+  type EIP1193RequestOptions,
   hexToBytes,
   InvalidAddressError,
-  isAddress,
+  InvalidChainIdError,
   keccak256,
+  TipAboveFeeCapError,
   type Transport,
 } from "viem";
 import {
@@ -111,8 +114,9 @@ export async function sendEncryptedTransaction<
     parameters.to !== null || parameters.data !== undefined,
     "Contract creation requires initcode.",
   );
-  if (parameters.to !== null && !isAddress(parameters.to))
-    throw new InvalidAddressError({ address: parameters.to });
+  const to = parameters.to;
+  if (to !== null && !to) throw new InvalidAddressError({ address: to });
+  assertRequest({ account: signer, to: parameters.to ?? undefined });
   const payload: Payload = {
     to: parameters.to,
     value: parameters.value ?? 0n,
@@ -134,26 +138,26 @@ export async function sendEncryptedTransaction<
   // Snapshot caller-owned options before awaiting any reads.
   const request = { ...parameters };
   const contextProvider = options.contextProvider;
-  // Viem actions share this request function. One request layer owns the read retry budget.
-  const reader = createClient({
-    chain: client.chain,
-    transport: custom(
-      {
-        request: (args) =>
-          client.request<{ Parameters: unknown; ReturnType: unknown }>(args, {
-            retryCount: 0,
-          }),
-      },
-      { retryCount: 2 },
-    ),
-  });
+  // Override the existing request layer's budget; fee hooks do not receive a signer.
+  const reader = {
+    ...client,
+    account: undefined,
+    // Fee estimation must use this reader, not actions bound to the original client.
+    getBlock: undefined,
+    getGasPrice: undefined,
+    // Forwarding preserves viem's caller-selected RPC return type.
+    request: ((args: EIP1193Parameters, options?: EIP1193RequestOptions) =>
+      client.request<{ Parameters: unknown; ReturnType: unknown }>(
+        { method: args.method, params: args.params },
+        { ...options, retryCount: 2 },
+      )) as typeof client.request,
+  };
   const chainId = await getChainId(reader);
-  assertInput(
-    chainId > 0 &&
-      (client.chain === undefined || client.chain.id === chainId) &&
-      (request.chainId === undefined || request.chainId === chainId),
-    "Chain ID mismatch.",
-  );
+  if (chainId <= 0) throw new InvalidChainIdError({ chainId });
+  if (client.chain)
+    assertCurrentChain({ chain: client.chain, currentChainId: chainId });
+  if (request.chainId !== undefined && request.chainId !== chainId)
+    throw new InvalidChainIdError({ chainId: request.chainId });
   // Viem 2.56.8 forwards request to its fee estimator, although the public action's
   // parameter type only exposes type/chain. Keep this request public-field-only.
   const feeParameters = {
@@ -177,10 +181,9 @@ export async function sendEncryptedTransaction<
   const maxFeePerGas = request.maxFeePerGas ?? fees.maxFeePerGas;
   const maxPriorityFeePerGas =
     request.maxPriorityFeePerGas ?? fees.maxPriorityFeePerGas;
-  assertInput(
-    maxPriorityFeePerGas <= maxFeePerGas,
-    "Priority fee exceeds fee cap.",
-  );
+  // Unlike viem's truthy fee assertion, this also covers a zero fee cap.
+  if (maxPriorityFeePerGas > maxFeePerGas)
+    throw new TipAboveFeeCapError({ maxFeePerGas, maxPriorityFeePerGas });
   // Resolve context before reserving a managed nonce, so unavailable keys do not consume one.
   const context = parseContext(
     contextProvider

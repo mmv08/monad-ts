@@ -83,9 +83,9 @@ Both the decorator and standalone action accept `contextProvider: async ({ chain
 
 Catch `EncryptedTransactionError` and inspect `code`. On `unknownOutcome`, `hash` identifies the attempted send. The original submission error remains in `cause`. The action does not retry submission, re-encrypt, or sign again. Unknown rejection reasons remain uncertain rather than proving rejection. A null lookup does not prove the node rejected a transaction.
 
-Malformed ETX query metadata reports `invalidResponse`; malformed key context reports `invalidContext`. Ordinary fields still use viem's formatting and errors.
+Malformed ETX query metadata reports `invalidResponse`; malformed key context reports `invalidContext`. Ordinary fields use viem's formatting and errors. Recipient/account validation uses `InvalidAddressError`, excessive priority fees use `TipAboveFeeCapError`, and configured-chain mismatches use `ChainMismatchError`. An invalid RPC chain ID or a conflicting numeric request chain ID uses `InvalidChainIdError`.
 
-Use a single-attempt wallet transport. Built-in fallback is rejected because it can submit to another endpoint after a timeout. Custom transports must honor the same rule. Internal public reads allow two retries through viem's request machinery; deterministic local validation does not retry.
+Use a single-attempt wallet transport. Built-in fallback is rejected because it can submit to another endpoint after a timeout. Custom transports must honor the same rule. Internal public reads override the existing viem request layer to allow two retries, regardless of the transport's default retry count; deterministic local validation does not retry.
 
 Viem nonce managers reserve a nonce before encryption/signing. A later local failure can leave a gap; use an explicit nonce after checking pending state. The action never resets shared nonce-manager state or releases a nonce after an uncertain send. Without a nonce manager, concurrent calls have viem's ordinary pending-nonce race.
 

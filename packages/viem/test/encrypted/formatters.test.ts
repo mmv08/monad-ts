@@ -1,7 +1,5 @@
 import { expect, test } from "bun:test";
 import {
-  createPublicClient,
-  custom,
   formatTransaction,
   formatTransactionReceipt,
   type RpcTransactionReceipt,
@@ -47,14 +45,6 @@ const rpcReceipt: RpcTransactionReceipt = {
   logs: [],
   logsBloom: `0x${"00".repeat(256)}`,
 };
-const chain = {
-  id: 1337,
-  name: "Formatter test",
-  nativeCurrency: { name: "Monad", symbol: "MON", decimals: 18 },
-  rpcUrls: { default: { http: [] } },
-  formatters: encryptedFormatters,
-};
-
 test("ordinary transaction and receipt fields use viem formatting", () => {
   expect(encryptedFormatters.transaction.format(rpc)).toEqual(
     formatTransaction(rpc),
@@ -69,21 +59,16 @@ test("ordinary transaction and receipt fields use viem formatting", () => {
   }
 });
 
-test("ETX transaction metadata failures report invalidResponse", async () => {
-  const transactionClient = (overrides: Record<string, unknown>) =>
-    createPublicClient({
-      chain,
-      transport: custom({
-        request: async () => ({
-          ...rpc,
-          type: "0x8",
-          epoch: "0x1",
-          encryptedFields: "0xf",
-          ciphertext: "0x",
-          decryptionStatus: "pending",
-          ...overrides,
-        }),
-      }),
+test("ETX transaction metadata failures report invalidResponse", () => {
+  const transaction = (overrides: Record<string, unknown>) =>
+    encryptedFormatters.transaction.format({
+      ...rpc,
+      type: "0x8",
+      epoch: "0x1",
+      encryptedFields: "0xf",
+      ciphertext: "0x",
+      decryptionStatus: "pending",
+      ...overrides,
     });
   for (const overrides of [
     { encrypted: false },
@@ -94,40 +79,33 @@ test("ETX transaction metadata failures report invalidResponse", async () => {
     { ciphertext: "0xgg" },
     { decryptionStatus: "invalid" },
   ])
-    await expect(
-      transactionClient(overrides).getTransaction({ hash }),
-    ).rejects.toMatchObject({ code: "invalidResponse" });
+    expect(() => transaction(overrides)).toThrow(
+      expect.objectContaining({ code: "invalidResponse" }),
+    );
+  expect(transaction({ decryptionStatus: undefined })).toMatchObject({
+    decryptionStatus: "unknown",
+  });
   expect(
-    await transactionClient({ decryptionStatus: undefined }).getTransaction({
-      hash,
-    }),
-  ).toMatchObject({ decryptionStatus: "unknown" });
-  expect(
-    await transactionClient({
+    transaction({
       concealedFields: ["to", "value", "input", "accessList"],
-    }).getTransaction({ hash }),
+    }),
   ).toMatchObject({ concealedFields: ["to", "value", "data", "accessList"] });
   // Ordinary fields are formatted, not checked against admission rules.
   expect(
-    await transactionClient({
+    transaction({
       value: "0x1",
       maxFeePerGas: "0x0",
-    }).getTransaction({ hash }),
+    }),
   ).toMatchObject({ value: 1n, maxFeePerGas: 0n });
 });
 
-test("ETX receipt metadata keeps decryption and execution status separate", async () => {
-  const receiptClient = (overrides: Record<string, unknown>) =>
-    createPublicClient({
-      chain,
-      transport: custom({
-        request: async () => ({
-          ...rpcReceipt,
-          type: "0x8",
-          decryptionStatus: "succeeded",
-          ...overrides,
-        }),
-      }),
+test("ETX receipt metadata keeps decryption and execution status separate", () => {
+  const receipt = (overrides: Record<string, unknown>) =>
+    encryptedFormatters.transactionReceipt.format({
+      ...rpcReceipt,
+      type: "0x8",
+      decryptionStatus: "succeeded",
+      ...overrides,
     });
   for (const overrides of [
     { decryptionStatus: "pending" },
@@ -135,12 +113,10 @@ test("ETX receipt metadata keeps decryption and execution status separate", asyn
     { decryptionStatus: "failed", failureReason: "decryptionFailed" },
     { decryptionStatus: "failed", status: "0x0" },
   ])
-    await expect(
-      receiptClient(overrides).getTransactionReceipt({ hash }),
-    ).rejects.toMatchObject({ code: "invalidResponse" });
-  expect(
-    await receiptClient({ decryptionStatus: undefined }).getTransactionReceipt({
-      hash,
-    }),
-  ).toMatchObject({ decryptionStatus: "unknown" });
+    expect(() => receipt(overrides)).toThrow(
+      expect.objectContaining({ code: "invalidResponse" }),
+    );
+  expect(receipt({ decryptionStatus: undefined })).toMatchObject({
+    decryptionStatus: "unknown",
+  });
 });

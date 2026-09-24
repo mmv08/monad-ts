@@ -2,15 +2,17 @@ import { expect, test } from "bun:test";
 import { createTestKey } from "@monad-crypto/btx/testing";
 import {
   bytesToHex,
+  ChainMismatchError,
   createPublicClient,
   createWalletClient,
-  custom,
   encodeFunctionData,
   erc20Abi,
   fallback,
   type Hash,
   type Hex,
   InvalidAddressError,
+  InvalidChainIdError,
+  TipAboveFeeCapError,
   zeroAddress,
 } from "viem";
 import { mnemonicToAccount, privateKeyToAccount } from "viem/accounts";
@@ -220,25 +222,6 @@ test("snapshot restores pending bytes, key context and outcomes", async () => {
   expect(mock.transaction(hash)?.decryptionStatus).toBe("pending");
 });
 
-test("read retry budget is bounded", async () => {
-  let calls = 0;
-  const wallet = createWalletClient({
-    account,
-    chain,
-    transport: custom(
-      {
-        request: async () => {
-          calls++;
-          throw Object.assign(new Error("Unavailable"), { code: -32005 });
-        },
-      },
-      { retryCount: 0 },
-    ),
-  }).extend(encryptedWalletActions());
-  await expect(wallet.sendEncryptedTransaction(request)).rejects.toThrow();
-  expect(calls).toBe(3);
-});
-
 test("HD signer, exact padding, public subset and creation", async () => {
   const { mock, wallet } = setup();
   const hd = mnemonicToAccount(
@@ -285,16 +268,25 @@ test("input mutation during context lookup cannot change the signed intent", asy
 
 test("fee and chain errors fail before submission", async () => {
   const { mock, wallet } = setup();
-  await expect(
-    wallet.sendEncryptedTransaction({
-      ...request,
-      maxFeePerGas: 1n,
-      maxPriorityFeePerGas: 2n,
-    }),
-  ).rejects.toThrow();
+  for (const maxFeePerGas of [0n, 1n])
+    await expect(
+      wallet.sendEncryptedTransaction({
+        ...request,
+        maxFeePerGas,
+        maxPriorityFeePerGas: 2n,
+      }),
+    ).rejects.toBeInstanceOf(TipAboveFeeCapError);
   await expect(
     wallet.sendEncryptedTransaction({ ...request, chainId: 1 }),
-  ).rejects.toThrow();
+  ).rejects.toBeInstanceOf(InvalidChainIdError);
+  const mismatched = createWalletClient({
+    account,
+    chain: { ...chain, id: 1 },
+    transport: mock.transport,
+  });
+  await expect(
+    sendEncryptedTransaction(mismatched, request),
+  ).rejects.toBeInstanceOf(ChainMismatchError);
   expect(
     mock.calls.some(({ method }) => method === "eth_sendRawTransaction"),
   ).toBe(false);
@@ -306,6 +298,12 @@ test("recipient validation follows viem and absent forbidden fields are accepted
     wallet.sendEncryptedTransaction({
       ...request,
       to: "0x7e5F4552091A69125d5DfCb7b8C2659029395Bdf",
+    }),
+  ).rejects.toBeInstanceOf(InvalidAddressError);
+  await expect(
+    wallet.sendEncryptedTransaction({
+      ...request,
+      account: { ...account, address: "0x01" },
     }),
   ).rejects.toBeInstanceOf(InvalidAddressError);
   expect(mock.calls).toHaveLength(0);

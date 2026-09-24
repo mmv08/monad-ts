@@ -24,6 +24,7 @@ import {
   serializeEnvelope,
   serializeTransaction,
 } from "../../src/encrypted/codec.js";
+import { buildVector } from "./fixtures.js";
 import { decodePayload, parseEnvelope } from "./mock.js";
 
 export const account = privateKeyToAccount(`0x${"01".repeat(32)}`);
@@ -51,17 +52,75 @@ export const base: Envelope = {
 };
 
 describe("type-8 codec", () => {
-  for (let mask = 1; mask < 16; mask++)
-    test(`mask ${mask}: selected fields and placeholders round-trip`, () => {
+  // Explicit PDF bit assignments, independent of the codec's field table.
+  for (const [mask, selection] of [
+    [1, ["to"]],
+    [2, ["value"]],
+    [3, ["to", "value"]],
+    [4, ["data"]],
+    [5, ["to", "data"]],
+    [6, ["value", "data"]],
+    [7, ["to", "value", "data"]],
+    [8, ["accessList"]],
+    [9, ["to", "accessList"]],
+    [10, ["value", "accessList"]],
+    [11, ["to", "value", "accessList"]],
+    [12, ["data", "accessList"]],
+    [13, ["to", "data", "accessList"]],
+    [14, ["value", "data", "accessList"]],
+    [15, ["to", "value", "data", "accessList"]],
+  ] as const)
+    test(`mask ${mask}: PDF selection, payload and placeholders`, () => {
+      const selected = new Set<string>(selection);
+      const wireValues = {
+        to: target,
+        value: "0x7b",
+        data: "0x123400",
+        accessList: [[target, [`0x${"01".repeat(32)}`]]],
+      } as const;
+      const placeholders = {
+        to: selected.has("to") ? zeroAddress : target,
+        value: selected.has("value") ? 0n : 123n,
+        data: selected.has("data") ? "0x" : "0x123400",
+        accessList: selected.has("accessList") ? [] : payload.accessList,
+      } as const;
+      expect(selectedFields(mask)).toEqual([...selection]);
+      expect(maskFor(selection)).toBe(mask);
+      expect(conceal(payload, mask)).toEqual(placeholders);
       const envelope = {
         ...base,
-        ...conceal(payload, mask),
+        ...placeholders,
         encryptedFields: mask,
       };
       const plaintext = encodePayload(payload, mask);
+      expect(plaintext).toBe(
+        Rlp.fromHex(selection.map((field) => wireValues[field])),
+      );
       expect(decodePayload(plaintext, envelope)).toEqual(payload);
-      expect(maskFor(selectedFields(mask))).toBe(mask);
     });
+
+  test("committed wire, signing and binding regression vector", async () => {
+    const stored: unknown = await Bun.file(
+      new URL("./vector.json", import.meta.url),
+    ).json();
+    expect(stored).toEqual(await buildVector());
+  });
+
+  test("ordinary serialization delegates to viem", async () => {
+    const raw = await account.signTransaction(
+      {
+        type: "eip1559",
+        chainId: 1337,
+        nonce: 0,
+        to: target,
+        gas: 21_000n,
+        maxFeePerGas: 3n,
+        maxPriorityFeePerGas: 1n,
+      },
+      { serializer: serializeTransaction },
+    );
+    expect(raw.startsWith("0x02")).toBe(true);
+  });
 
   test("encrypted envelope signs, recovers and decrypts", async () => {
     const envelope = { ...base };

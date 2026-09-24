@@ -12,6 +12,8 @@
 
 **Dependency update:** the current baseline is viem `2.56.8` and Ox `0.14.45`. The mock now delegates RLP depth and boundary checks to viem's `fromRlp`, keeping canonicality and ETX shape checks. Mock/example chains disable replacement detection once through `supportsTransactionReplacementDetection`. The fork's 28-day dependency release-age restriction has been removed. Version references below record the original planning baseline.
 
+**Review cleanup:** read retries now override the existing request layer instead of creating another client/transport. Address and configured-chain checks reuse viem assertions; fee and numeric chain-ID failures use viem errors. Tests now separate preparation, transport, admission, and codec behavior, use explicit expectations for all 15 masks, check exact validation failures, and verify retry budgets and preserved submission causes. Formatter tables call formatters directly; action tests retain query integration coverage.
+
 **Authority:** [parent delivery plan](../../../encrypted-transactions-plan.md), especially Phase 2 and section 7; [protocol PDF](../../../encrypted_txs_specs_wip.pdf), pp. 15–25 and 46–47. These files live beside the `monad-ts` checkout. Protocol changes must update the codec, fixtures, and this plan together.
 
 ## 1. Recommendation
