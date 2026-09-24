@@ -39,7 +39,7 @@ Changing any row changes ciphertext bytes and requires new fixtures and a review
 
 ## 3. Encryption Pipeline
 
-`encrypt` first decodes the key's canonical bytes, requires `ek^q = 1`, and rejects `ek = 1`. The membership check rejects field zero and elements outside G_T; the identity check rejects a degenerate key whose mask anyone could compute. These checks do not authenticate the key's source or epoch. The caller must obtain the right epoch key from a trusted source.
+`encrypt` checks and pads the plaintext before decoding the key's canonical bytes. Key validation requires `ek^q = 1` and rejects `ek = 1`. The membership check rejects field zero and elements outside G_T; the identity check rejects a degenerate key whose mask anyone could compute. These checks do not authenticate the key's source or epoch. The caller must obtain the right epoch key from a trusted source.
 
 `src/btx.ts` follows the specification's `encrypt` (p. 51–52) in order:
 
@@ -61,9 +61,10 @@ The hash primitives in `src/hash.ts` match Appendix E and the challenge on p. 64
 
 The ciphertext has exactly one serialization, because associated data may later be bound to it by its bytes.
 
-- After checking its arguments, `deserializeCiphertext` applies the specification's seven steps in order and rejects trailing data, a length prefix that disagrees with the buffer, a masked payload above the caller's `maxMaskedPayloadLength`, and non-canonical scalars. An explicit limit must be a nonnegative safe integer; omit it for no limit. The limit includes the inner four-byte plaintext-length prefix but excludes the 132-byte `CIPHERTEXT_OVERHEAD`, and the check precedes copying C_2.
+- `serializeCiphertext` checks component types and fixed widths, but leaves point/scalar canonicality and proof checks to decoding and admission.
+- `deserializeCiphertext` checks the total length and caller's size limit before decoding R or copying components. It rejects trailing data, a length prefix that disagrees with the buffer, a masked payload above the caller's `maxMaskedPayloadLength`, and non-canonical scalars. An explicit limit must be a nonnegative safe integer; omit it for no limit. The limit includes the inner four-byte plaintext-length prefix but excludes the 132-byte `CIPHERTEXT_OVERHEAD`. This changes error precedence for inputs with both length and point faults.
 - Decoded components own their bytes, including for Node `Buffer` inputs; later input changes cannot alter the ciphertext.
-- G_1 decoding relies on the pinned noble decoder: the x limb is range-checked, the identity has one encoding, and the compressed flag must be set. Subgroup membership is checked at decode as well as in `assertValidCiphertext`. This preserves acceptance and rejection but may change the rejection stage and error precedence for inputs with several faults.
+- G_1 decoding relies on the pinned noble decoder: the x limb is range-checked, the identity has one encoding, and the compressed flag must be set. Subgroup membership is checked at decode as well as in `assertValidCiphertext`. Admission cannot trust an earlier decode because callers can construct ciphertext objects or mutate their arrays. This preserves acceptance and rejection but may change the rejection stage and error precedence for inputs with several faults.
 - G_1 encoding normalizes computed identity points to Noble's canonical `Point.ZERO`. Nonzero terms in the proof check can cancel to a non-normalized projective identity, which Noble 2.3.0 otherwise refuses to encode. Identity T is valid; identity R remains forbidden.
 - Encryption-key decoding converts CatBLST wire order to Noble tower order, uses `Fp12.fromBytes` to range-check every limb, then enforces target-group membership and rejects the identity. Encoding applies the inverse conversion. In 48-byte limb indices, CatBLST bytes select `[0, 1, 6, 7, 2, 3, 8, 9, 4, 5, 10, 11]` from Noble's output. The same codec encodes the KEM pad. Field decoding alone does not establish G_T membership.
 - Scalars are 32 big-endian bytes strictly below q.
@@ -89,11 +90,15 @@ The fixture helper supplies entropy that yields each stored seed and nonce throu
 | R is the identity | `BtxError` `InvalidCiphertext` |
 | Proof does not verify (any component or AD altered) | `BtxError` `ClientNizkFailed` |
 | Plaintext/seed witness does not reproduce R, C_1, or C_2 under the supplied key in `verifyDecryption` | `false` |
+| Candidate plaintext exceeds C_2's padded capacity | `false`, before key decoding |
+| Test-key B_max is not a positive u32, or trapdoor is not in [1, q) | `RangeError` |
 | Padding malformed or guardrail failed during test decryption | `null` (⊥), never an exception |
 
 ## 7. Test-Only Decryption
 
-`src/testing.ts` is a separate entry, `@monad-crypto/btx/testing`, and the main entry never imports it. It computes `h = g_2·τ^(B_max+1)`, the reference-string slot the DKG withholds, so `e(g_1, h) = ek` and `e(R, h) = ek·r` is the pad the threshold path reconstructs. Decryption then follows `batch_decrypt` for one slot: recover `S`, unmask `P`, `unpad`, and run `verify_decryption`. One process holds τ, so this offers no threshold, no share release, and no privacy. It exists so tests and the local mock can decrypt real ciphertexts without a DKG.
+`src/testing.ts` is a separate entry, `@monad-crypto/btx/testing`, and the main entry never imports it. It validates B_max as a positive u32 and τ as a nonzero canonical scalar, then computes `h = g_2·τ^(B_max+1)`, the reference-string slot the DKG withholds. Thus `e(g_1, h) = ek` and `e(R, h) = ek·r` is the pad the threshold path reconstructs. One process holds τ, so this offers no threshold, no share release, and no privacy. It exists so tests and the local mock can decrypt real ciphertexts without a DKG.
+
+Decryption uses the shorter checks in Rust's `final_recovery.rs`: admit the ciphertext, recover `S`, unmask `P`, check its canonical padding, derive nonzero `r`, and require `R = g_1·r`. It returns only the unpadded plaintext and seed. Re-encrypting P would repeat the XOR that recovered it. Once R matches, the pairing pad equals `ek^r`, so a second C_1 check is also redundant. The standalone `verifyDecryption` still checks R, C_1, and C_2 because it receives a candidate plaintext and seed rather than recovering them from a trusted pad.
 
 ## 8. Dependencies
 

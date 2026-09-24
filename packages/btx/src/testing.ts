@@ -6,11 +6,11 @@
  * and local development, and never import it from the sender library.
  */
 
-import { unpad, validateCiphertext, verifyDecryption } from "./btx.js";
+import { unpad, validateCiphertext } from "./btx.js";
 import { xorBytes } from "./bytes.js";
 import type { Ciphertext } from "./ciphertext.js";
 import { encodeGt, Fr, G1, G2, pairing, randomScalar } from "./curve.js";
-import { hKem, kdf, prg } from "./hash.js";
+import { expandR, hKem, hRho, kdf, prg } from "./hash.js";
 
 /** Options for {@link createTestKey}. */
 type TestKeyOptions = {
@@ -51,10 +51,23 @@ type TestKey = {
 /** The production B_max. */
 const DEFAULT_MAX_BATCH_SIZE = 256;
 
-/** Generates ek from a trapdoor and returns it with a decryptor that uses the trapdoor directly. */
+/**
+ * Generates ek from a trapdoor and returns it with a decryptor that uses the trapdoor directly.
+ * @throws {RangeError} If B_max is not a positive u32 or the trapdoor is not in [1, q).
+ */
 function createTestKey(options: TestKeyOptions = {}): TestKey {
-  const trapdoor = options.trapdoor ?? randomScalar();
   const maxBatchSize = options.maxBatchSize ?? DEFAULT_MAX_BATCH_SIZE;
+  if (
+    !Number.isSafeInteger(maxBatchSize) ||
+    maxBatchSize < 1 ||
+    maxBatchSize > 0xffff_ffff
+  ) {
+    throw new RangeError("maxBatchSize must be a positive u32");
+  }
+  const trapdoor = options.trapdoor ?? randomScalar();
+  if (typeof trapdoor !== "bigint" || trapdoor <= 0n || trapdoor >= Fr.ORDER) {
+    throw new RangeError("trapdoor must be a scalar in [1, q)");
+  }
   // h = g_2·τ^(B_max+1) is the reference-string slot the DKG withholds, so e(g_1, h) = ek and
   // e(R, h) = ek·r is the pad the threshold path reconstructs from shares.
   const hole = G2.Point.BASE.multiply(
@@ -77,16 +90,12 @@ function createTestKey(options: TestKeyOptions = {}): TestKey {
         prg(kdf(seed, associatedData), ciphertext.maskedPayload.length),
       );
       const plaintext = unpad(padded);
-      if (
-        plaintext === null ||
-        !verifyDecryption({
-          ciphertext,
-          encryptionKey,
-          plaintext,
-          seed,
-          associatedData,
-        })
-      ) {
+      if (plaintext === null) return null;
+      // P was recovered from C_2 with this seed. Once padding is canonical,
+      // re-encrypting P only repeats that XOR. The independent check is R = g_1·r.
+      // The pairing pad equals ek^r when R matches, so C_1 needs no second check here.
+      const r = expandR(hRho(associatedData, padded, seed));
+      if (r === 0n || !G1.Point.BASE.multiply(r).equals(commitment)) {
         return null;
       }
       return { plaintext, seed };

@@ -202,11 +202,11 @@ function encryptWithRandom(
 ): Ciphertext {
   abytes(plaintext);
   abytes(associatedData);
-  const ek = decodeEncryptionKey(encryptionKey);
   const padded = pad(
     plaintext,
     paddedLength ?? paddedLengthFor(plaintext.length),
   );
+  const ek = decodeEncryptionKey(encryptionKey);
   return encryptPadded(padded, ek, associatedData, random);
 }
 
@@ -262,10 +262,10 @@ function verifyDecryption({
   abytes(plaintext);
   abytes(seed, SEED_SIZE);
   abytes(associatedData);
-  const ek = decodeEncryptionKey(encryptionKey);
   const paddedLength = ciphertext.maskedPayload.length - LENGTH_PREFIX_SIZE;
   if (plaintext.length > paddedLength) return false;
   const padded = pad(plaintext, paddedLength);
+  const ek = decodeEncryptionKey(encryptionKey);
   const r = expandR(hRho(associatedData, padded, seed));
   if (
     r === 0n ||

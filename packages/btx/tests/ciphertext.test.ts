@@ -38,6 +38,19 @@ function withCommitment(hex: string): Uint8Array {
 }
 
 describe("serialization", () => {
+  test.each([
+    ["commitment", 47],
+    ["commitment", 49],
+    ["maskedSeed", 15],
+    ["maskedSeed", 17],
+    ["proof", 63],
+    ["proof", 65],
+  ] as const)("rejects %s with %i bytes", (field, length) => {
+    expect(() =>
+      serializeCiphertext({ ...ciphertext, [field]: new Uint8Array(length) }),
+    ).toThrow(RangeError);
+  });
+
   test("lays out R ∥ C_1 ∥ len(C_2) ∥ C_2 ∥ π", () => {
     expect(bytes).toHaveLength(CIPHERTEXT_OVERHEAD + 44);
     expect(bytes.subarray(0, 48)).toEqual(ciphertext.commitment);
@@ -72,6 +85,16 @@ describe("serialization", () => {
 });
 
 describe("deserialization rejects", () => {
+  test("checks wire lengths and the size limit before the point", () => {
+    const malformed = withCommitment(OFF_CURVE);
+    expectBtxError(
+      () => deserializeCiphertext(malformed, { maxMaskedPayloadLength: 43 }),
+      "InvalidLength",
+    );
+    malformed.set(u32be(45), 64);
+    expectBtxError(() => deserializeCiphertext(malformed), "InvalidLength");
+  });
+
   test("a non-canonical x that reduces to a valid subgroup point", () => {
     const point = bls12_381.G1.Point.BASE.multiply(2n);
     const canonical = point.toBytes();

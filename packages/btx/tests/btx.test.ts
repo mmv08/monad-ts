@@ -341,6 +341,19 @@ describe("encrypt and decrypt", () => {
       "InvalidLength",
     );
   });
+
+  test("rejects invalid padding before decoding the key", () => {
+    expectBtxError(
+      () =>
+        encrypt({
+          plaintext: pattern(10),
+          encryptionKey: new Uint8Array(0),
+          associatedData: ad,
+          paddedLength: 9,
+        }),
+      "InvalidLength",
+    );
+  });
 });
 
 describe("assertValidCiphertext", () => {
@@ -546,8 +559,50 @@ describe("decryption guardrails", () => {
     expect(key.decrypt(ciphertext, ad)).toBeNull();
   });
 
-  test("rejects zero as an explicit trapdoor", () => {
-    expect(() => createTestKey({ trapdoor: 0n })).toThrow(RangeError);
+  test.each([
+    -1n,
+    0n,
+    Fr.ORDER,
+    Fr.ORDER + 1n,
+  ])("rejects invalid trapdoor %s", (trapdoor) => {
+    expect(() => createTestKey({ trapdoor })).toThrow(RangeError);
+  });
+
+  test.each([
+    -1,
+    0,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    0x1_0000_0000,
+  ])("rejects invalid batch size %s", (maxBatchSize) => {
+    expect(() => createTestKey({ maxBatchSize })).toThrow(RangeError);
+  });
+
+  test.each([
+    1, 0xffff_ffff,
+  ])("accepts batch-size boundary %s", (maxBatchSize) => {
+    const boundaryKey = createTestKey({ trapdoor: 42n, maxBatchSize });
+    const ciphertext = encrypt({
+      plaintext,
+      encryptionKey: boundaryKey.encryptionKey,
+      associatedData: ad,
+    });
+    expect(boundaryKey.decrypt(ciphertext, ad)?.plaintext).toEqual(plaintext);
+  });
+
+  test("returns bottom when the recovered witness derives zero", () => {
+    const ciphertext = encrypt({
+      plaintext,
+      encryptionKey: key.encryptionKey,
+      associatedData: ad,
+    });
+    const expand = spyOn(hashes, "expandR").mockReturnValue(0n);
+    try {
+      expect(key.decrypt(ciphertext, ad)).toBeNull();
+    } finally {
+      expand.mockRestore();
+    }
   });
 });
 
@@ -653,6 +708,18 @@ describe("verifyDecryption", () => {
       verifyDecryption({
         ciphertext,
         encryptionKey: key.encryptionKey,
+        plaintext: pattern(33),
+        seed,
+        associatedData: ad,
+      }),
+    ).toBe(false);
+  });
+
+  test("rejects an oversized candidate before decoding the key", () => {
+    expect(
+      verifyDecryption({
+        ciphertext,
+        encryptionKey: new Uint8Array(0),
         plaintext: pattern(33),
         seed,
         associatedData: ad,

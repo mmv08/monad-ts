@@ -51,7 +51,7 @@ For transactions, supply the 576-byte epoch encryption key in CatBLST's canonica
 | Call | Result |
 | --- | --- |
 | `encrypt` | A `Ciphertext` object |
-| `serializeCiphertext` / `deserializeCiphertext` | Convert between the object and wire bytes. Decoding checks the encoding, not the proof. |
+| `serializeCiphertext` / `deserializeCiphertext` | Convert between the object and wire bytes. Serialization checks component widths; decoding checks canonical encoding. Neither checks the proof. |
 | `assertValidCiphertext` | Checks the commitment and proof. Returns nothing on success; throws on rejection. |
 | `verifyDecryption` | Checks a plaintext and recovered seed against the commitment, masked seed, and masked payload under the encryption key. Returns `true` or `false`. |
 | `key.decrypt` | Checks the ciphertext, then returns `{ plaintext, seed }`, or `null` if padding or plaintext checks fail. Throws if the commitment or proof fails. |
@@ -59,6 +59,8 @@ For transactions, supply the 576-byte epoch encryption key in CatBLST's canonica
 Run `assertValidCiphertext(ciphertext, associatedData)` before `verifyDecryption({ ciphertext, encryptionKey, plaintext, seed, associatedData })`: the latter does not check the proof. Supply the same authenticated epoch key used for encryption. An invalid key throws; a valid but wrong key returns `false`.
 
 Protocol rejections throw `BtxError`; use its `code` to distinguish them. Invalid types or byte lengths can throw `TypeError` or `RangeError`, including in `verifyDecryption`.
+
+Size checks run before curve work. `verifyDecryption` returns `false` for a candidate that cannot fit in the ciphertext, before decoding its key. Test keys require a positive u32 `maxBatchSize` and a trapdoor in `[1, q)`; invalid values throw `RangeError`.
 
 Encryption always uses secure platform randomness. Fixtures supply deterministic randomness through an internal helper, outside the package API.
 

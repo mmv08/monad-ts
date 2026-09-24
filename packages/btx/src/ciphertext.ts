@@ -35,8 +35,18 @@ const PROOF_SIZE = 2 * SCALAR_SIZE;
 const CIPHERTEXT_OVERHEAD =
   G1_SIZE + MASKED_SEED_SIZE + LENGTH_PREFIX_SIZE + PROOF_SIZE;
 
-/** serialize_ciphertext: `R ∥ C_1 ∥ len(C_2) as u32be ∥ C_2 ∥ π`. */
+/**
+ * serialize_ciphertext: `R ∥ C_1 ∥ len(C_2) as u32be ∥ C_2 ∥ π`.
+ * Checks component widths, not point/scalar canonicality or the client proof.
+ *
+ * @throws {TypeError} If a component is not a Uint8Array.
+ * @throws {RangeError} If a fixed-width component has the wrong length.
+ */
 function serializeCiphertext(ciphertext: Ciphertext): Uint8Array {
+  abytes(ciphertext.commitment, G1_SIZE);
+  abytes(ciphertext.maskedSeed, MASKED_SEED_SIZE);
+  abytes(ciphertext.maskedPayload);
+  abytes(ciphertext.proof, PROOF_SIZE);
   return concatBytes(
     ciphertext.commitment,
     ciphertext.maskedSeed,
@@ -77,11 +87,6 @@ function deserializeCiphertext(
       `shorter than ${CIPHERTEXT_OVERHEAD} bytes`,
     );
   }
-  const commitment = Uint8Array.from(bytes.subarray(0, G1_SIZE));
-  decodeG1(commitment);
-  const maskedSeed = Uint8Array.from(
-    bytes.subarray(G1_SIZE, G1_SIZE + MASKED_SEED_SIZE),
-  );
   const payloadLength = readU32be(bytes, G1_SIZE + MASKED_SEED_SIZE);
   if (bytes.length !== CIPHERTEXT_OVERHEAD + payloadLength) {
     throw new BtxError(
@@ -95,6 +100,11 @@ function deserializeCiphertext(
   ) {
     throw new BtxError("InvalidLength", "C_2 exceeds the size limit");
   }
+  const commitment = Uint8Array.from(bytes.subarray(0, G1_SIZE));
+  decodeG1(commitment);
+  const maskedSeed = Uint8Array.from(
+    bytes.subarray(G1_SIZE, G1_SIZE + MASKED_SEED_SIZE),
+  );
   const payloadStart = G1_SIZE + MASKED_SEED_SIZE + LENGTH_PREFIX_SIZE;
   const maskedPayload = Uint8Array.from(
     bytes.subarray(payloadStart, payloadStart + payloadLength),
