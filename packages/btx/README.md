@@ -56,7 +56,7 @@ For transactions, supply the 576-byte epoch encryption key in CatBLST's canonica
 
 Pass the unchanged result of `admitCiphertext` to `verifyDecryption({ ciphertext, encryptionKey, plaintext, seed, associatedData })`: the latter does not check the proof. Supply the same authenticated epoch key used for encryption. An invalid key throws; a valid but wrong key returns `false`.
 
-Admitted ciphertexts own their bytes but remain mutable. Admission proves validity at that call, not after later edits. The test decryptor accepts wire bytes directly; use `serializeCiphertext` for objects returned by encryption. Encryption, decryption, and witness verification leave caller inputs unchanged.
+Admitted ciphertexts own their bytes but remain mutable. Their components share one backing buffer, separate from the caller's input. Admission proves validity at that call, not after later edits. The test decryptor accepts wire bytes directly; use `serializeCiphertext` for objects returned by encryption. Encryption, decryption, and witness verification leave caller inputs unchanged.
 
 Protocol rejections throw `BtxError`; use its `code` to distinguish them. Invalid types or byte lengths can throw `TypeError` or `RangeError`, including in `verifyDecryption`.
 

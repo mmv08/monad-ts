@@ -1,5 +1,10 @@
 import { expect } from "bun:test";
-import { abytes, bytesToHex, hexToBytes, utf8ToBytes } from "../src/bytes.js";
+import {
+  abytes,
+  bytesToHex,
+  hexToBytes,
+  utf8ToBytes,
+} from "@noble/hashes/utils.js";
 import { BtxError } from "../src/error.js";
 
 /** Bytes 0, 1, 2, … modulo 251, so no two in-range positions repeat within a page of them. */

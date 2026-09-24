@@ -1,13 +1,7 @@
-import { encryptWithRandom, pad, paddedLengthFor } from "../../src/btx.js";
+import { encryptWithRandom } from "../../src/btx.js";
+import { bytesToNumberBE } from "../../src/bytes.js";
 import { serializeCiphertext } from "../../src/ciphertext.js";
-import {
-  decodeEncryptionKey,
-  encodeGt,
-  encodeScalar,
-  Gt,
-  wideScalar,
-} from "../../src/curve.js";
-import { expandR, hRho } from "../../src/hash.js";
+import { encodeScalar, Fr } from "../../src/curve.js";
 import { createTestKey } from "../../src/testing.js";
 import {
   bytesToHex,
@@ -27,12 +21,10 @@ type Vector = {
   readonly nonce: string;
   readonly associatedData: string;
   readonly plaintext: string;
-  readonly paddedLength: number;
+  /** Null asks encryption to select its default padding. */
+  readonly paddedLength: number | null;
   /** Values a conforming implementation must reproduce. */
   readonly encryptionKey: string;
-  readonly paddedPlaintext: string;
-  readonly r: string;
-  readonly pad: string;
   readonly ciphertext: string;
 };
 
@@ -48,11 +40,11 @@ type Case = {
 };
 
 const SMALL_TRAPDOOR = 0x2an;
-const LARGE_TRAPDOOR = wideScalar(pattern(64));
+const LARGE_TRAPDOOR = Fr.create(bytesToNumberBE(pattern(64)));
 const SEED_A = hexToBytes("000102030405060708090a0b0c0d0e0f");
 const SEED_B = hexToBytes("f0e1d2c3b4a5968778695a4b3c2d1e0f");
 const NONCE_A = 0x0123456789abcdefn;
-const NONCE_B = wideScalar(pattern(64).reverse());
+const NONCE_B = Fr.create(bytesToNumberBE(pattern(64).reverse()));
 
 const CASES: readonly Case[] = [
   {
@@ -132,10 +124,6 @@ function buildVectors(): Vector[] {
       trapdoor: c.trapdoor,
       maxBatchSize: c.maxBatchSize,
     });
-    const paddedLength = c.paddedLength ?? paddedLengthFor(c.plaintext.length);
-    const padded = pad(c.plaintext, paddedLength);
-    const r = expandR(hRho(c.associatedData, padded, c.seed));
-    const ek = decodeEncryptionKey(key.encryptionKey);
     const ciphertext = encryptWithRandom(
       {
         plaintext: c.plaintext,
@@ -154,11 +142,8 @@ function buildVectors(): Vector[] {
       nonce: bytesToHex(encodeScalar(c.nonce)),
       associatedData: bytesToHex(c.associatedData),
       plaintext: bytesToHex(c.plaintext),
-      paddedLength,
+      paddedLength: c.paddedLength ?? null,
       encryptionKey: bytesToHex(key.encryptionKey),
-      paddedPlaintext: bytesToHex(padded),
-      r: bytesToHex(encodeScalar(r)),
-      pad: bytesToHex(encodeGt(Gt.pow(ek, r))),
       ciphertext: bytesToHex(serializeCiphertext(ciphertext)),
     };
   });

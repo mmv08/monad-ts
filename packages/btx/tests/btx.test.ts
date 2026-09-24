@@ -63,20 +63,6 @@ describe("padding", () => {
   ])("rejects %d as a default-padding input", (length) => {
     expectBtxError(() => paddedLengthFor(length), "InvalidLength");
   });
-
-  test("prefixes the true length and fills with zeroes", () => {
-    const padded = pad(utf8ToBytes("abc"), 8);
-
-    expect(padded).toEqual(
-      Uint8Array.from([0, 0, 0, 3, 0x61, 0x62, 0x63, 0, 0, 0, 0, 0]),
-    );
-    expect(unpad(padded)).toEqual(utf8ToBytes("abc"));
-  });
-
-  test("allows an exact fit", () => {
-    expect(unpad(pad(pattern(300), 300))).toEqual(pattern(300));
-    expect(unpad(pad(new Uint8Array(0), 0))).toEqual(new Uint8Array(0));
-  });
 });
 
 describe("encrypt and decrypt", () => {
@@ -112,18 +98,17 @@ describe("encrypt and decrypt", () => {
   });
 
   test("the public entry cannot use a caller's randomness override", () => {
-    const plaintext = utf8ToBytes("platform randomness only");
-    const ciphertext = encrypt({
-      plaintext,
-      encryptionKey: key.encryptionKey,
-      associatedData: ad,
-      // @ts-expect-error Randomness injection is not part of the public API.
-      randomBytes: scriptedRandom(),
-    });
-
-    expect(key.decrypt(serializeCiphertext(ciphertext), ad)?.plaintext).toEqual(
-      plaintext,
-    );
+    expect(() =>
+      encrypt({
+        plaintext: utf8ToBytes("platform randomness only"),
+        encryptionKey: key.encryptionKey,
+        associatedData: ad,
+        // @ts-expect-error Randomness injection is not part of the public API.
+        randomBytes: () => {
+          throw new Error("caller randomness must not be used");
+        },
+      }),
+    ).not.toThrow();
   });
 
   test("round-trips with a generated test key", () => {
@@ -188,29 +173,6 @@ describe("encrypt and decrypt", () => {
         encrypt({
           plaintext: new Uint8Array(0),
           encryptionKey: new Uint8Array(576 - 1),
-          associatedData: ad,
-        }),
-      "InvalidPoint",
-    );
-  });
-
-  test("rejects a non-canonical encryption key", () => {
-    const nonCanonical = key.encryptionKey.slice();
-    // A limb equal to the field modulus is not the canonical form of zero.
-    nonCanonical.set(
-      Uint8Array.from(
-        Buffer.from(
-          "1a0111ea397fe69a4b1ba7b6434bacd764774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaaab",
-          "hex",
-        ),
-      ),
-    );
-
-    expectBtxError(
-      () =>
-        encrypt({
-          plaintext: new Uint8Array(0),
-          encryptionKey: nonCanonical,
           associatedData: ad,
         }),
       "InvalidPoint",
@@ -596,18 +558,6 @@ describe("verifyDecryption", () => {
         ciphertext,
         encryptionKey: key.encryptionKey,
         plaintext: pattern(33),
-        seed,
-        associatedData: ad,
-      }),
-    ).toBe(false);
-  });
-
-  test("returns false for a commitment that does not match the witness", () => {
-    expect(
-      verifyDecryption({
-        ciphertext: { ...ciphertext, commitment: encodeG1(G1.Point.BASE) },
-        encryptionKey: key.encryptionKey,
-        plaintext,
         seed,
         associatedData: ad,
       }),

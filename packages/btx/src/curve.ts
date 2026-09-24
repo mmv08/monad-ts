@@ -58,11 +58,6 @@ function encodeScalar(scalar: bigint): Uint8Array {
   return numberToBytesBE(scalar, SCALAR_SIZE);
 }
 
-/** Reduces 64 big-endian bytes modulo the group order: wide reduction, never bit masking. */
-function wideScalar(bytes: Uint8Array): bigint {
-  return Fr.create(bytesToNumberBE(bytes));
-}
-
 /** Samples a nonzero scalar with Noble's BLS12-381 secret-key sampler. */
 function randomScalar(): bigint {
   return bytesToNumberBE(bls12_381.utils.randomSecretKey());
@@ -131,5 +126,4 @@ export {
   pairing,
   randomScalar,
   SCALAR_SIZE,
-  wideScalar,
 };

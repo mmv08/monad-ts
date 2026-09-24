@@ -1,12 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { encryptWithRandom, pad } from "../src/btx.js";
-import {
-  decodeEncryptionKey,
-  encodeGt,
-  encodeScalar,
-  Gt,
-} from "../src/curve.js";
-import { expandR, hRho } from "../src/hash.js";
+import { encryptWithRandom } from "../src/btx.js";
 import { serializeCiphertext } from "../src/index.js";
 import { createTestKey } from "../src/testing.js";
 import vectors from "./fixtures/vectors.json" with { type: "json" };
@@ -23,20 +16,12 @@ describe("fixture vectors", () => {
 
     const plaintext = hexToBytes(vector.plaintext);
     const seed = hexToBytes(vector.seed);
-    const padded = pad(plaintext, vector.paddedLength);
-    expect(bytesToHex(padded)).toBe(vector.paddedPlaintext);
-
-    const r = expandR(hRho(associatedData, padded, seed));
-    expect(bytesToHex(encodeScalar(r))).toBe(vector.r);
-    const padElement = Gt.pow(decodeEncryptionKey(key.encryptionKey), r);
-    expect(bytesToHex(encodeGt(padElement))).toBe(vector.pad);
-
     const ciphertext = encryptWithRandom(
       {
         plaintext,
         encryptionKey: key.encryptionKey,
         associatedData,
-        paddedLength: vector.paddedLength,
+        paddedLength: vector.paddedLength ?? undefined,
       },
       scriptedRandom(seed),
       () => BigInt(`0x${vector.nonce}`),

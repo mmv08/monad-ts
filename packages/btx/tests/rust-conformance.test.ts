@@ -1,11 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { hexToBytes } from "@noble/hashes/utils.js";
 import { pad } from "../src/btx.js";
-import {
-  concatBytes,
-  hexToBytes,
-  numberToBytesBE,
-  utf8ToBytes,
-} from "../src/bytes.js";
+import { concatBytes, numberToBytesBE, utf8ToBytes } from "../src/bytes.js";
 import {
   decodeEncryptionKey,
   encodeG1,

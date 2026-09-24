@@ -100,15 +100,16 @@ function decodeCiphertextBytes(
   ) {
     throw new BtxError("InvalidLength", "C_2 exceeds the size limit");
   }
-  const commitment = Uint8Array.from(bytes.subarray(0, G1_SIZE));
-  const maskedSeed = Uint8Array.from(
-    bytes.subarray(G1_SIZE, G1_SIZE + MASKED_SEED_SIZE),
-  );
+  // Own one copy even for Buffer inputs; the components share its backing buffer.
+  const owned = Uint8Array.from(bytes);
+  const commitment = owned.subarray(0, G1_SIZE);
+  const maskedSeed = owned.subarray(G1_SIZE, G1_SIZE + MASKED_SEED_SIZE);
   const payloadStart = G1_SIZE + MASKED_SEED_SIZE + LENGTH_PREFIX_SIZE;
-  const maskedPayload = Uint8Array.from(
-    bytes.subarray(payloadStart, payloadStart + payloadLength),
+  const maskedPayload = owned.subarray(
+    payloadStart,
+    payloadStart + payloadLength,
   );
-  const proof = Uint8Array.from(bytes.subarray(payloadStart + payloadLength));
+  const proof = owned.subarray(payloadStart + payloadLength);
   return {
     ciphertext: { commitment, maskedSeed, maskedPayload, proof },
     commitment: decodeG1(commitment),

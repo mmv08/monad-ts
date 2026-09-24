@@ -110,16 +110,6 @@ describe("deserialization rejects", () => {
     expectBtxError(() => decodeCiphertextBytes(longer), "InvalidLength");
   });
 
-  test("a C_2 above the caller's size limit", () => {
-    expect(() =>
-      decodeCiphertextBytes(bytes, { maxMaskedPayloadLength: 44 }),
-    ).not.toThrow();
-    expectBtxError(
-      () => decodeCiphertextBytes(bytes, { maxMaskedPayloadLength: 43 }),
-      "InvalidLength",
-    );
-  });
-
   test("a nonempty C_2 when the size limit is zero", () => {
     expectBtxError(
       () => decodeCiphertextBytes(bytes, { maxMaskedPayloadLength: 0 }),

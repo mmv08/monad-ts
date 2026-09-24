@@ -5,9 +5,7 @@ import {
 } from "@noble/curves/utils.js";
 import {
   abytes,
-  bytesToHex,
   concatBytes,
-  hexToBytes,
   randomBytes,
   utf8ToBytes,
 } from "@noble/hashes/utils.js";
@@ -33,20 +31,17 @@ function xorBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
   return xorInto(Uint8Array.from(a), b);
 }
 
-/** XORs into an owned buffer and returns it. The mask must not overlap the buffer. */
+/** XORs equal-length byte arrays into the first, owned buffer. The mask must not overlap it. */
 function xorInto(a: Uint8Array, b: Uint8Array): Uint8Array {
-  abytes(b, a.length);
   for (let i = 0; i < a.length; i++) a[i] ^= b[i];
   return a;
 }
 
 export {
   abytes,
-  bytesToHex,
   bytesToNumberBE,
   concatBytes,
   equalBytes,
-  hexToBytes,
   numberToBytesBE,
   randomBytes,
   readU32be,

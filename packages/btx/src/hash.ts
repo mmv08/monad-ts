@@ -1,6 +1,6 @@
 import { blake3 } from "@noble/hashes/blake3.js";
-import { u64be, utf8ToBytes } from "./bytes.js";
-import { encodeGt, type Fp12, wideScalar } from "./curve.js";
+import { bytesToNumberBE, u64be, utf8ToBytes } from "./bytes.js";
+import { encodeGt, type Fp12, Fr } from "./curve.js";
 
 type Hasher = ReturnType<typeof blake3.create>;
 
@@ -28,7 +28,7 @@ function hRho(
 
 /** expand_r: the encryption scalar from the coins. Zero must be resampled by the caller. */
 function expandR(coins: Uint8Array): bigint {
-  return wideScalar(derive("btx/r/v1").update(coins).xof(64));
+  return Fr.create(bytesToNumberBE(derive("btx/r/v1").update(coins).xof(64)));
 }
 
 /** H_kem: the 16-byte mask that hides the seed under the pad. */
@@ -64,7 +64,7 @@ function challenge(
     .update(nonceCommitment)
     .update(maskedSeed);
   absorbLp(hasher, maskedPayload);
-  return wideScalar(absorbLp(hasher, associatedData).xof(64));
+  return Fr.create(bytesToNumberBE(absorbLp(hasher, associatedData).xof(64)));
 }
 
 export { challenge, expandR, hKem, hRho, kdf, prg };

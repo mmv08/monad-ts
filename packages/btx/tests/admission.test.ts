@@ -52,6 +52,11 @@ describe("wire admission", () => {
       decode.mockRestore();
     }
     expect(
+      admitCiphertext(wire, ad, {
+        maxMaskedPayloadLength: ciphertext.maskedPayload.length,
+      }),
+    ).toEqual(ciphertext);
+    expect(
       key.decrypt(wire, ad, {
         maxMaskedPayloadLength: ciphertext.maskedPayload.length,
       })?.plaintext,
