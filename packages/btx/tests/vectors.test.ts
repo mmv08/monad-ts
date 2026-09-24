@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { pad } from "../src/btx.js";
+import { encryptWithRandom, pad } from "../src/btx.js";
 import {
   decodeEncryptionKey,
   encodeGt,
@@ -11,7 +11,6 @@ import { expandR, hRho } from "../src/hash.js";
 import {
   assertValidCiphertext,
   deserializeCiphertext,
-  encrypt,
   serializeCiphertext,
 } from "../src/index.js";
 import { createTestKey } from "../src/testing.js";
@@ -43,13 +42,15 @@ describe("fixture vectors", () => {
     const padElement = Gt.pow(decodeEncryptionKey(key.encryptionKey), r);
     expect(bytesToHex(encodeGt(padElement))).toBe(vector.pad);
 
-    const ciphertext = encrypt({
-      plaintext,
-      encryptionKey: key.encryptionKey,
-      associatedData,
-      paddedLength: vector.paddedLength,
-      randomBytes: fixedRandom(seed, BigInt(`0x${vector.nonce}`)),
-    });
+    const ciphertext = encryptWithRandom(
+      {
+        plaintext,
+        encryptionKey: key.encryptionKey,
+        associatedData,
+        paddedLength: vector.paddedLength,
+      },
+      fixedRandom(seed, BigInt(`0x${vector.nonce}`)),
+    );
     expect(bytesToHex(ciphertext.commitment)).toBe(vector.commitment);
     expect(bytesToHex(ciphertext.maskedSeed)).toBe(vector.maskedSeed);
     expect(bytesToHex(ciphertext.maskedPayload)).toBe(vector.maskedPayload);

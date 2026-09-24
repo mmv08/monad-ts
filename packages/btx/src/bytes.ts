@@ -14,16 +14,12 @@ import {
 
 /** Encodes an integer as 4 big-endian bytes. */
 function u32be(value: number): Uint8Array {
-  const bytes = new Uint8Array(4);
-  new DataView(bytes.buffer).setUint32(0, value);
-  return bytes;
+  return numberToBytesBE(BigInt(value), 4);
 }
 
 /** Encodes an integer as 8 big-endian bytes. */
 function u64be(value: number): Uint8Array {
-  const bytes = new Uint8Array(8);
-  new DataView(bytes.buffer).setBigUint64(0, BigInt(value));
-  return bytes;
+  return numberToBytesBE(BigInt(value), 8);
 }
 
 /** Reads 4 big-endian bytes at `offset` as an integer. */

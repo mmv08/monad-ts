@@ -1,4 +1,4 @@
-import { encrypt, pad, paddedLengthFor } from "../../src/btx.js";
+import { encryptWithRandom, pad, paddedLengthFor } from "../../src/btx.js";
 import { serializeCiphertext } from "../../src/ciphertext.js";
 import {
   decodeEncryptionKey,
@@ -141,13 +141,15 @@ function buildVectors(): Vector[] {
     const padded = pad(c.plaintext, paddedLength);
     const r = expandR(hRho(c.associatedData, padded, c.seed));
     const ek = decodeEncryptionKey(key.encryptionKey);
-    const ciphertext = encrypt({
-      plaintext: c.plaintext,
-      encryptionKey: key.encryptionKey,
-      associatedData: c.associatedData,
-      paddedLength: c.paddedLength,
-      randomBytes: fixedRandom(c.seed, c.nonce),
-    });
+    const ciphertext = encryptWithRandom(
+      {
+        plaintext: c.plaintext,
+        encryptionKey: key.encryptionKey,
+        associatedData: c.associatedData,
+        paddedLength: c.paddedLength,
+      },
+      fixedRandom(c.seed, c.nonce),
+    );
     return {
       name: c.name,
       trapdoor: bytesToHex(encodeScalar(c.trapdoor)),

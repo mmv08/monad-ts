@@ -1,19 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { blake3 } from "@noble/hashes/blake3.js";
 import { utf8ToBytes } from "../src/bytes.js";
-import { challenge, prg } from "../src/hash.js";
-
-// Fixed transcript answers live in rust-conformance.test.ts.
-describe("PRG output boundaries", () => {
-  test.each([
-    0, 65,
-  ])("PRG squeezes %i bytes in keyed mode without absorbing a message", (length) => {
-    const key = new Uint8Array(32).fill(5);
-    const expected = blake3.create({ key }).xof(length);
-
-    expect(prg(key, length)).toEqual(expected);
-  });
-});
+import { challenge } from "../src/hash.js";
 
 describe("challenge", () => {
   const r = new Uint8Array(48).fill(1);

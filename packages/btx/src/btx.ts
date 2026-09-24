@@ -39,8 +39,6 @@ type EncryptParameters = {
   readonly associatedData: Uint8Array;
   /** Plaintext capacity, excluding the 4-byte length prefix. Defaults to {@link paddedLengthFor}. */
   readonly paddedLength?: number;
-  /** Source of the seed and proof nonce. Defaults to the platform CSPRNG; override only in tests. */
-  readonly randomBytes?: (byteLength: number) => Uint8Array;
 };
 
 /** Named inputs for {@link verifyDecryption}. */
@@ -192,15 +190,16 @@ function encryptPadded(
  *
  * @throws {BtxError} If the encryption key or padded length is invalid.
  * @throws {TypeError} If plaintext or associated data is not a Uint8Array.
- * @throws {RangeError} If an injected randomness source returns the wrong length.
  */
-function encrypt({
-  plaintext,
-  encryptionKey,
-  associatedData,
-  paddedLength,
-  randomBytes: random,
-}: EncryptParameters): Ciphertext {
+function encrypt(parameters: EncryptParameters): Ciphertext {
+  return encryptWithRandom(parameters, randomBytes);
+}
+
+/** Internal encryption entry for fixtures; the public entry always uses the platform CSPRNG. */
+function encryptWithRandom(
+  { plaintext, encryptionKey, associatedData, paddedLength }: EncryptParameters,
+  random: (byteLength: number) => Uint8Array,
+): Ciphertext {
   abytes(plaintext);
   abytes(associatedData);
   const ek = decodeEncryptionKey(encryptionKey);
@@ -208,7 +207,7 @@ function encrypt({
     plaintext,
     paddedLength ?? paddedLengthFor(plaintext.length),
   );
-  return encryptPadded(padded, ek, associatedData, random ?? randomBytes);
+  return encryptPadded(padded, ek, associatedData, random);
 }
 
 /** Runs admission and returns the decoded commitment for test decryption to reuse. */
@@ -292,6 +291,7 @@ export {
   assertValidCiphertext,
   encrypt,
   encryptPadded,
+  encryptWithRandom,
   pad,
   paddedLengthFor,
   unpad,

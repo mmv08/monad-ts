@@ -58,11 +58,9 @@ For transactions, supply the 576-byte epoch encryption key in CatBLST's canonica
 
 Run `assertValidCiphertext(ciphertext, associatedData)` before `verifyDecryption({ ciphertext, encryptionKey, plaintext, seed, associatedData })`: the latter does not check the proof. Supply the same authenticated epoch key used for encryption. An invalid key throws; a valid but wrong key returns `false`.
 
-The CatBLST codec replaces the earlier Noble-native G_T encoding. Earlier keys and ciphertexts are not compatible with this version. `verifyDecryption` now requires `encryptionKey`.
-
 Protocol rejections throw `BtxError`; use its `code` to distinguish them. Invalid types or byte lengths can throw `TypeError` or `RangeError`, including in `verifyDecryption`.
 
-Encryption uses secure platform randomness. Override `randomBytes` only in tests.
+Encryption always uses secure platform randomness. Fixtures supply deterministic randomness through an internal helper, outside the package API.
 
 ## Padding
 

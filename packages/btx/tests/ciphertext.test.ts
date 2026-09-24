@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Buffer } from "node:buffer";
-import { u32be } from "../src/bytes.js";
+import { bls12_381 } from "@noble/curves/bls12-381.js";
+import { numberToBytesBE, u32be } from "../src/bytes.js";
 import {
   assertValidCiphertext,
   CIPHERTEXT_OVERHEAD,
@@ -71,6 +72,22 @@ describe("serialization", () => {
 });
 
 describe("deserialization rejects", () => {
+  test("a non-canonical x that reduces to a valid subgroup point", () => {
+    const point = bls12_381.G1.Point.BASE.multiply(2n);
+    const canonical = point.toBytes();
+    const overflowingX = point.toAffine().x + bls12_381.fields.Fp.ORDER;
+    expect(overflowingX).toBeLessThan(1n << 381n);
+    const nonCanonical = numberToBytesBE(overflowingX, 48);
+    nonCanonical[0] |= canonical[0] & 0xe0;
+    const wire = bytes.slice();
+    wire.set(nonCanonical);
+    expectBtxError(() => deserializeCiphertext(wire), "InvalidPoint");
+
+    // A reducing decoder would recover this valid point, so subgroup checks cannot help.
+    wire.set(canonical);
+    expect(deserializeCiphertext(wire).commitment).toEqual(canonical);
+  });
+
   // Rust admission vectors cover trailing bytes, non-subgroup points, and noncanonical scalars.
   test("input shorter than the fixed-width components", () => {
     expectBtxError(

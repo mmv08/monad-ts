@@ -1,6 +1,12 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { encryptPadded, pad, unpad } from "../src/btx.js";
-import { concatBytes, u32be } from "../src/bytes.js";
+import { bls12_381 } from "@noble/curves/bls12-381.js";
+import { encryptPadded, encryptWithRandom, pad, unpad } from "../src/btx.js";
+import {
+  bytesToNumberBE,
+  concatBytes,
+  numberToBytesBE,
+  u32be,
+} from "../src/bytes.js";
 import {
   decodeEncryptionKey,
   decodeScalar,
@@ -137,18 +143,13 @@ describe("encrypt and decrypt", () => {
     const seed = pattern(16);
     const nonce = 0x1234n;
     const plaintext = utf8ToBytes("same inputs");
-    const first = encrypt({
+    const parameters = {
       plaintext,
       encryptionKey: key.encryptionKey,
       associatedData: ad,
-      randomBytes: fixedRandom(seed, nonce),
-    });
-    const second = encrypt({
-      plaintext,
-      encryptionKey: key.encryptionKey,
-      associatedData: ad,
-      randomBytes: fixedRandom(seed, nonce),
-    });
+    };
+    const first = encryptWithRandom(parameters, fixedRandom(seed, nonce));
+    const second = encryptWithRandom(parameters, fixedRandom(seed, nonce));
 
     expect(serializeCiphertext(first)).toEqual(serializeCiphertext(second));
   });
@@ -167,6 +168,19 @@ describe("encrypt and decrypt", () => {
     });
 
     expect(first.commitment).not.toEqual(second.commitment);
+  });
+
+  test("the public entry cannot use a caller's randomness override", () => {
+    const plaintext = utf8ToBytes("platform randomness only");
+    const ciphertext = encrypt({
+      plaintext,
+      encryptionKey: key.encryptionKey,
+      associatedData: ad,
+      // @ts-expect-error Randomness injection is not part of the public API.
+      randomBytes: scriptedRandom(),
+    });
+
+    expect(key.decrypt(ciphertext, ad)?.plaintext).toEqual(plaintext);
   });
 
   test("round-trips with a generated test key", () => {
@@ -203,16 +217,14 @@ describe("encrypt and decrypt", () => {
     const expand = spyOn(hashes, "expandR").mockReturnValueOnce(0n);
     let ciphertext: Ciphertext;
     try {
-      ciphertext = encrypt({
-        plaintext,
-        encryptionKey: key.encryptionKey,
-        associatedData: ad,
-        randomBytes: scriptedRandom(
-          new Uint8Array(16),
-          seed,
-          new Uint8Array(48),
-        ),
-      });
+      ciphertext = encryptWithRandom(
+        {
+          plaintext,
+          encryptionKey: key.encryptionKey,
+          associatedData: ad,
+        },
+        scriptedRandom(new Uint8Array(16), seed, new Uint8Array(48)),
+      );
       expect(expand).toHaveBeenCalledTimes(2);
     } finally {
       expand.mockRestore();
@@ -228,12 +240,14 @@ describe("encrypt and decrypt", () => {
     ["nonce entropy", new Uint8Array(16), new Uint8Array(64)],
   ] as const)("rejects injected %s of the wrong length", (_, seed, entropy) => {
     expect(() =>
-      encrypt({
-        plaintext: new Uint8Array(0),
-        encryptionKey: key.encryptionKey,
-        associatedData: ad,
-        randomBytes: (length) => (length === 16 ? seed : entropy),
-      }),
+      encryptWithRandom(
+        {
+          plaintext: new Uint8Array(0),
+          encryptionKey: key.encryptionKey,
+          associatedData: ad,
+        },
+        (length) => (length === 16 ? seed : entropy),
+      ),
     ).toThrow(RangeError);
   });
 
@@ -289,6 +303,16 @@ describe("encrypt and decrypt", () => {
     );
   });
 
+  test("rejects an overflowing key limb that reduces to a valid G_T element", () => {
+    const nonCanonical = key.encryptionKey.slice();
+    const limb = bytesToNumberBE(nonCanonical.subarray(0, 48));
+    nonCanonical.set(numberToBytesBE(limb + bls12_381.fields.Fp.ORDER, 48));
+
+    // Modular reduction would restore this valid key and evade the membership check.
+    expect(() => decodeEncryptionKey(key.encryptionKey)).not.toThrow();
+    expectBtxError(() => decodeEncryptionKey(nonCanonical), "InvalidPoint");
+  });
+
   test.each([
     ["zero", Gt.ZERO],
     ["the identity", Gt.ONE],
@@ -322,12 +346,10 @@ describe("encrypt and decrypt", () => {
 describe("assertValidCiphertext", () => {
   const plaintext = utf8ToBytes("bound to this transaction");
   const seed = pattern(16);
-  const ciphertext = encrypt({
-    plaintext,
-    encryptionKey: key.encryptionKey,
-    associatedData: ad,
-    randomBytes: fixedRandom(seed, 0x1234n),
-  });
+  const ciphertext = encryptWithRandom(
+    { plaintext, encryptionKey: key.encryptionKey, associatedData: ad },
+    fixedRandom(seed, 0x1234n),
+  );
   const r = hashes.expandR(
     hashes.hRho(ad, pad(plaintext, ciphertext.maskedPayload.length - 4), seed),
   );
