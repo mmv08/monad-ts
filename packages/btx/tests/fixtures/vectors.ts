@@ -11,9 +11,9 @@ import { expandR, hRho } from "../../src/hash.js";
 import { createTestKey } from "../../src/testing.js";
 import {
   bytesToHex,
-  fixedRandom,
   hexToBytes,
   pattern,
+  scriptedRandom,
   utf8ToBytes,
 } from "../utils.js";
 
@@ -33,11 +33,6 @@ type Vector = {
   readonly paddedPlaintext: string;
   readonly r: string;
   readonly pad: string;
-  readonly commitment: string;
-  readonly maskedSeed: string;
-  readonly maskedPayload: string;
-  readonly challenge: string;
-  readonly response: string;
   readonly ciphertext: string;
 };
 
@@ -148,7 +143,8 @@ function buildVectors(): Vector[] {
         associatedData: c.associatedData,
         paddedLength: c.paddedLength,
       },
-      fixedRandom(c.seed, c.nonce),
+      scriptedRandom(c.seed),
+      () => c.nonce,
     );
     return {
       name: c.name,
@@ -163,11 +159,6 @@ function buildVectors(): Vector[] {
       paddedPlaintext: bytesToHex(padded),
       r: bytesToHex(encodeScalar(r)),
       pad: bytesToHex(encodeGt(Gt.pow(ek, r))),
-      commitment: bytesToHex(ciphertext.commitment),
-      maskedSeed: bytesToHex(ciphertext.maskedSeed),
-      maskedPayload: bytesToHex(ciphertext.maskedPayload),
-      challenge: bytesToHex(ciphertext.proof.subarray(0, 32)),
-      response: bytesToHex(ciphertext.proof.subarray(32)),
       ciphertext: bytesToHex(serializeCiphertext(ciphertext)),
     };
   });

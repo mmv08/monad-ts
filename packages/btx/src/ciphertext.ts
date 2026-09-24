@@ -58,21 +58,13 @@ function serializeCiphertext(ciphertext: Ciphertext): Uint8Array {
 
 /**
  * deserialize_ciphertext: decodes the wire form, rejecting anything that is not its one canonical
- * serialization. Internal codec entry for format tests; consumers use admitCiphertext.
+ * serialization. Owns the wire components and decodes each point and scalar once.
  * The point is fully validated here, including subgroup membership. Decoding does not check
  * the client proof or reject an identity commitment.
  *
  * @throws {BtxError} If the wire encoding, masked-payload length, or size limit is rejected.
  * @throws {TypeError} If bytes is not a Uint8Array.
  */
-function deserializeCiphertext(
-  bytes: Uint8Array,
-  options: DeserializeOptions = {},
-): Ciphertext {
-  return decodeCiphertextBytes(bytes, options).ciphertext;
-}
-
-/** Owns the wire components and decodes each point and scalar once. */
 function decodeCiphertextBytes(
   bytes: Uint8Array,
   options: DeserializeOptions = {},
@@ -129,7 +121,6 @@ export type { Ciphertext, DeserializeOptions };
 export {
   CIPHERTEXT_OVERHEAD,
   decodeCiphertextBytes,
-  deserializeCiphertext,
   LENGTH_PREFIX_SIZE,
   MASKED_SEED_SIZE,
   serializeCiphertext,

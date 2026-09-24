@@ -49,13 +49,13 @@ Changing any row changes ciphertext bytes and requires new fixtures and a review
 4. `C_1 = S ⊕ H_kem(pad, R, AD)`; `C_2 = P ⊕ PRG(KDF(S, AD), |P|)`.
 5. Draw the nonce `k`; `π = prove(R, C_1, C_2, AD, r, k)` with `T = g_1·k`, `c = challenge(R, T, C_1, C_2, AD)`, `s = k − c·r`.
 
-`admitCiphertext(bytes, AD, options)` decodes the exact wire layout, checks R and the proof scalars, rejects identity R, then recomputes `T' = g_1·s + R·c` and the challenge (p. 52). It returns a ciphertext with owned bytes or throws on rejection. The internal `validateCiphertext` helper returns the ciphertext and its decoded values for test decryption to reuse within that call. Admission and test decryption accept only wire bytes; the split decoder remains internal for format tests.
+`admitCiphertext(bytes, AD, options)` decodes the exact wire layout, checks R and the proof scalars, rejects identity R, then recomputes `T' = g_1·s + R·c` with Noble's `mulAddUnsafe` and checks the challenge (p. 52). Both scalars are public. It returns a ciphertext with owned bytes or throws on rejection. The internal `validateCiphertext` helper returns the ciphertext and its decoded values for test decryption to reuse within that call. Admission and test decryption accept only wire bytes; format tests call `decodeCiphertextBytes` directly.
 
 `verifyDecryption` rebuilds `P` from the candidate plaintext and `|C_2|`, recomputes nonzero `r`, and checks `R`, `C_1`, and `C_2`. It takes the authenticated encryption key and independently computes `ek^r` to require `C_1 = S XOR H_kem(ek^r, R, AD)`, matching current Rust. This strengthens the PDF's R/C_2-only check (p. 60): a sender who knows `r` can make a valid proof over an inconsistent `C_1`. It compares canonical commitment bytes rather than decoding R again. Mismatches return `false`; invalid keys, types, or seed lengths can throw. It does not check the proof, so callers must use an unchanged result of `admitCiphertext`.
 
 The hash primitives in `src/hash.ts` match Appendix E and the challenge on p. 64 exactly: `S`, `R`, `T`, `C_1`, and the encoded pad are absorbed bare; `AD`, `P`, and `C_2` are length-prefixed; the Blake3 context is a derive_key context, not absorbed input.
 
-`encrypt` and `verifyDecryption` take named parameter objects. `encrypt` calls the internal `encryptWithRandom` helper with the platform CSPRNG. That helper checks inputs, pads the plaintext, and calls `encryptPadded`, which derives `r` once per seed attempt and retains it for masking and proof generation. Tests use these internal helpers for fixed randomness and malformed padding; neither helper is exported by a package entry.
+`encrypt` and `verifyDecryption` take named parameter objects. `encrypt` calls the internal `encryptWithRandom` helper with the platform byte RNG and Noble's scalar sampler. That helper checks inputs, pads the plaintext, and calls `encryptPadded`, which derives `r` once per seed attempt and retains it for masking and proof generation. Tests supply fixed seeds and nonzero nonce scalars directly, without depending on the scalar sampler's entropy mapping. Neither helper is exported by a package entry.
 
 `encryptPadded` consumes its owned padded buffer, applying the stream XOR in place. Witness verification also XORs into its rebuilt padded buffer. Test decryption XORs the ciphertext into the newly allocated stream buffer. Each avoids a separate payload-sized XOR result. The hash helpers remain explicit and caller-owned inputs remain unchanged; there is no streaming or buffer-pool layer.
 
@@ -75,11 +75,11 @@ The ciphertext has exactly one serialization, because associated data may later 
 
 ## 5. Randomness Boundary
 
-`encrypt` draws only `S` and the proof nonce, from Noble's `randomBytes` (the platform CSPRNG). Its public API has no randomness override. Fixtures and tests inject randomness through the internal `encryptWithRandom` helper. `r` is derived from `(AD, P, S)`, so a ciphertext is a deterministic function of those inputs and the nonce, which is what fixtures pin.
+`encrypt` draws `S` with Noble's `randomBytes` and the proof nonce with its `randomSecretKey` sampler, both backed by the platform CSPRNG. Its public API has no randomness override. Fixtures and tests supply seeds and nonce scalars through the internal `encryptWithRandom` helper. `r` is derived from `(AD, P, S)`, so a ciphertext is a deterministic function of those inputs and the nonce, which is what fixtures pin. Internal code trusts the RNG's requested seed width and the hash XOF's 64-byte output; public byte-input checks remain at the API boundaries.
 
 Each seed attempt consumes 16 bytes. The proof nonce uses Noble's BLS12-381 `randomSecretKey` helper, which maps 48 random bytes to a scalar in `[1, q)`. The test-key generator uses the same helper for its default trapdoor. Neither call uses the PDF's wide-reduction helper; that remains unchanged for `r` and the proof challenge.
 
-The fixture helper supplies entropy that yields each stored seed and nonce through `encryptWithRandom`. Vector tests compare each intermediate value and ciphertext against the stored file.
+Vector tests pass each stored seed and nonce scalar directly to `encryptWithRandom`. They compare the encryption key, padded plaintext, scalar, pad, and complete ciphertext against the stored file, then decrypt the stored ciphertext. Component bytes appear only in the complete ciphertext, not as duplicate expected fields.
 
 ## 6. Error Mapping
 
@@ -142,7 +142,7 @@ Before changing this package:
 
 - Confirm every constant in section 2 against the current PDF and the explicit compatibility choices in section 10, including which inputs are absorbed bare and which are length-prefixed.
 - Preserve the order of `encrypt`: pad, derive `r` from `(AD, P, S)`, mask, then prove over the final `(R, C_1, C_2, AD)`.
-- Preserve one serialization per ciphertext; keep the point, scalar, and length checks in `deserializeCiphertext`.
+- Preserve one serialization per ciphertext; keep the point, scalar, and length checks in `decodeCiphertextBytes`.
 - Keep `admitCiphertext` as the admission gate: reject identity R, but allow identity T.
 - Keep the encryption-key membership and identity checks; neither authenticates the epoch key.
 - Keep the testing entry out of the main entry and out of any sender bundle.

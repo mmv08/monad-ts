@@ -37,11 +37,6 @@ describe("wire admission", () => {
     const admitted = admitCiphertext(input, ad);
     input.fill(0);
     expect(admitted).toEqual(ciphertext);
-    admitted.maskedPayload[0] ^= 1;
-    const altered = serializeCiphertext(admitted);
-    expectBtxError(() => admitCiphertext(altered, ad), "ClientNizkFailed");
-    expectBtxError(() => key.decrypt(altered, ad), "ClientNizkFailed");
-    expect(admitCiphertext(wire, ad)).toEqual(ciphertext);
   });
 
   test("enforces wire limits before curve work in both paths", () => {

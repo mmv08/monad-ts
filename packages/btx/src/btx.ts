@@ -142,9 +142,7 @@ function verifyProof(
   { commitment, ciphertext, c, s }: ReturnType<typeof decodeCiphertextBytes>,
   associatedData: Uint8Array,
 ): boolean {
-  const nonceCommitment = G1.Point.BASE.multiplyUnsafe(s).add(
-    commitment.multiplyUnsafe(c),
-  );
+  const nonceCommitment = G1.Point.BASE.mulAddUnsafe(s, commitment, c);
   const expected = challenge(
     ciphertext.commitment,
     encodeG1(nonceCommitment),
@@ -155,17 +153,18 @@ function verifyProof(
   return expected === c;
 }
 
-/** Consumes an owned padded buffer; tests may supply malformed padding to exercise decryption. */
+/** Consumes an owned padded buffer. Internal callers supply 16-byte seeds and nonzero nonce scalars. */
 function encryptPadded(
   paddedPlaintext: Uint8Array,
   encryptionKey: Fp12,
   associatedData: Uint8Array,
   random: (byteLength: number) => Uint8Array,
+  sampleNonce: () => bigint,
 ): Ciphertext {
   let seed: Uint8Array;
   let r: bigint;
   do {
-    seed = abytes(random(SEED_SIZE), SEED_SIZE);
+    seed = random(SEED_SIZE);
     r = expandR(hRho(associatedData, paddedPlaintext, seed));
   } while (r === 0n);
   const commitment = encodeG1(G1.Point.BASE.multiply(r));
@@ -176,8 +175,7 @@ function encryptPadded(
     prg(kdf(seed, associatedData), paddedPlaintext.length),
   );
   const body = { commitment, maskedSeed, maskedPayload };
-  // TODO(spec): the PDF writes the proof nonce as `rng.scalar()` without fixing its derivation.
-  const nonce = randomScalar(random);
+  const nonce = sampleNonce();
   return { ...body, proof: prove(body, associatedData, r, nonce) };
 }
 
@@ -188,13 +186,15 @@ function encryptPadded(
  * @throws {TypeError} If plaintext or associated data is not a Uint8Array.
  */
 function encrypt(parameters: EncryptParameters): Ciphertext {
-  return encryptWithRandom(parameters, randomBytes);
+  // TODO(spec): the PDF writes the proof nonce as `rng.scalar()` without fixing its derivation.
+  return encryptWithRandom(parameters, randomBytes, randomScalar);
 }
 
-/** Internal encryption entry for fixtures; the public entry always uses the platform CSPRNG. */
+/** Internal entry for fixed seeds and nonce scalars; the public entry uses the platform CSPRNG. */
 function encryptWithRandom(
   { plaintext, encryptionKey, associatedData, paddedLength }: EncryptParameters,
   random: (byteLength: number) => Uint8Array,
+  sampleNonce: () => bigint,
 ): Ciphertext {
   abytes(plaintext);
   abytes(associatedData);
@@ -203,7 +203,7 @@ function encryptWithRandom(
     paddedLength ?? paddedLengthFor(plaintext.length),
   );
   const ek = decodeEncryptionKey(encryptionKey);
-  return encryptPadded(padded, ek, associatedData, random);
+  return encryptPadded(padded, ek, associatedData, random, sampleNonce);
 }
 
 /** Decodes and admits once; decoded values stay local to the current operation. */

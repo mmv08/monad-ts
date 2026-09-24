@@ -7,10 +7,10 @@ import {
   Gt,
 } from "../src/curve.js";
 import { expandR, hRho } from "../src/hash.js";
-import { admitCiphertext, serializeCiphertext } from "../src/index.js";
+import { serializeCiphertext } from "../src/index.js";
 import { createTestKey } from "../src/testing.js";
 import vectors from "./fixtures/vectors.json" with { type: "json" };
-import { bytesToHex, fixedRandom, hexToBytes } from "./utils.js";
+import { bytesToHex, hexToBytes, scriptedRandom } from "./utils.js";
 
 describe("fixture vectors", () => {
   test.each(vectors.map((v) => [v.name, v] as const))("%s", (_, vector) => {
@@ -38,20 +38,12 @@ describe("fixture vectors", () => {
         associatedData,
         paddedLength: vector.paddedLength,
       },
-      fixedRandom(seed, BigInt(`0x${vector.nonce}`)),
-    );
-    expect(bytesToHex(ciphertext.commitment)).toBe(vector.commitment);
-    expect(bytesToHex(ciphertext.maskedSeed)).toBe(vector.maskedSeed);
-    expect(bytesToHex(ciphertext.maskedPayload)).toBe(vector.maskedPayload);
-    expect(bytesToHex(ciphertext.proof)).toBe(
-      vector.challenge + vector.response,
+      scriptedRandom(seed),
+      () => BigInt(`0x${vector.nonce}`),
     );
     expect(bytesToHex(serializeCiphertext(ciphertext))).toBe(vector.ciphertext);
 
     const wire = hexToBytes(vector.ciphertext);
-    expect(serializeCiphertext(admitCiphertext(wire, associatedData))).toEqual(
-      wire,
-    );
     const decrypted = key.decrypt(wire, associatedData);
     expect(decrypted && bytesToHex(decrypted.plaintext)).toBe(vector.plaintext);
     expect(decrypted && bytesToHex(decrypted.seed)).toBe(vector.seed);

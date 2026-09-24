@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { bls12_381 } from "@noble/curves/bls12-381.js";
 import { numberToBytesBE, u32be } from "../src/bytes.js";
-import { deserializeCiphertext } from "../src/ciphertext.js";
+import { decodeCiphertextBytes } from "../src/ciphertext.js";
 import {
   admitCiphertext,
   CIPHERTEXT_OVERHEAD,
+  type Ciphertext,
   encrypt,
   serializeCiphertext,
 } from "../src/index.js";
@@ -60,12 +61,13 @@ describe("serialization", () => {
   });
 
   test("round-trips", () => {
-    expect(deserializeCiphertext(bytes)).toEqual(ciphertext);
-    expect(serializeCiphertext(deserializeCiphertext(bytes))).toEqual(bytes);
+    const decoded = decodeCiphertextBytes(bytes).ciphertext;
+    expect<Ciphertext>(decoded).toEqual(ciphertext);
+    expect(serializeCiphertext(decoded)).toEqual(bytes);
   });
 
   test("rejects non-byte input", () => {
-    expect(() => deserializeCiphertext("00" as unknown as Uint8Array)).toThrow(
+    expect(() => decodeCiphertextBytes("00" as unknown as Uint8Array)).toThrow(
       TypeError,
     );
   });
@@ -81,17 +83,19 @@ describe("deserialization rejects", () => {
     nonCanonical[0] |= canonical[0] & 0xe0;
     const wire = bytes.slice();
     wire.set(nonCanonical);
-    expectBtxError(() => deserializeCiphertext(wire), "InvalidPoint");
+    expectBtxError(() => decodeCiphertextBytes(wire), "InvalidPoint");
 
     // A reducing decoder would recover this valid point, so subgroup checks cannot help.
     wire.set(canonical);
-    expect(deserializeCiphertext(wire).commitment).toEqual(canonical);
+    expect(decodeCiphertextBytes(wire).ciphertext.commitment).toEqual(
+      canonical,
+    );
   });
 
   // Rust admission vectors cover trailing bytes, non-subgroup points, and noncanonical scalars.
   test("input shorter than the fixed-width components", () => {
     expectBtxError(
-      () => deserializeCiphertext(bytes.subarray(0, CIPHERTEXT_OVERHEAD - 1)),
+      () => decodeCiphertextBytes(bytes.subarray(0, CIPHERTEXT_OVERHEAD - 1)),
       "InvalidLength",
     );
   });
@@ -102,30 +106,30 @@ describe("deserialization rejects", () => {
     const longer = bytes.slice();
     longer.set(u32be(45), 64);
 
-    expectBtxError(() => deserializeCiphertext(shorter), "InvalidLength");
-    expectBtxError(() => deserializeCiphertext(longer), "InvalidLength");
+    expectBtxError(() => decodeCiphertextBytes(shorter), "InvalidLength");
+    expectBtxError(() => decodeCiphertextBytes(longer), "InvalidLength");
   });
 
   test("a C_2 above the caller's size limit", () => {
     expect(() =>
-      deserializeCiphertext(bytes, { maxMaskedPayloadLength: 44 }),
+      decodeCiphertextBytes(bytes, { maxMaskedPayloadLength: 44 }),
     ).not.toThrow();
     expectBtxError(
-      () => deserializeCiphertext(bytes, { maxMaskedPayloadLength: 43 }),
+      () => decodeCiphertextBytes(bytes, { maxMaskedPayloadLength: 43 }),
       "InvalidLength",
     );
   });
 
   test("a nonempty C_2 when the size limit is zero", () => {
     expectBtxError(
-      () => deserializeCiphertext(bytes, { maxMaskedPayloadLength: 0 }),
+      () => decodeCiphertextBytes(bytes, { maxMaskedPayloadLength: 0 }),
       "InvalidLength",
     );
     const empty = { ...ciphertext, maskedPayload: new Uint8Array(0) };
-    expect(
-      deserializeCiphertext(serializeCiphertext(empty), {
+    expect<Ciphertext>(
+      decodeCiphertextBytes(serializeCiphertext(empty), {
         maxMaskedPayloadLength: 0,
-      }),
+      }).ciphertext,
     ).toEqual(empty);
   });
 
@@ -138,7 +142,7 @@ describe("deserialization rejects", () => {
     Number.MAX_SAFE_INTEGER + 1,
   ])("an invalid size limit of %d", (maxMaskedPayloadLength) => {
     expectBtxError(
-      () => deserializeCiphertext(bytes, { maxMaskedPayloadLength }),
+      () => decodeCiphertextBytes(bytes, { maxMaskedPayloadLength }),
       "InvalidLength",
     );
   });
@@ -151,7 +155,7 @@ describe("deserialization rejects", () => {
     ["the infinity flag with the sort bit set", `e0${IDENTITY.slice(2)}`],
   ])("%s as R", (_, hex) => {
     expectBtxError(
-      () => deserializeCiphertext(withCommitment(hex)),
+      () => decodeCiphertextBytes(withCommitment(hex)),
       "InvalidPoint",
     );
   });
@@ -159,7 +163,7 @@ describe("deserialization rejects", () => {
 
 describe("the identity as R", () => {
   test("decodes, but admission rejects it", () => {
-    const decoded = deserializeCiphertext(withCommitment(IDENTITY));
+    const decoded = decodeCiphertextBytes(withCommitment(IDENTITY)).ciphertext;
 
     expect(decoded.commitment).toEqual(hexToBytes(IDENTITY));
     expectBtxError(

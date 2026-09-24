@@ -1,12 +1,5 @@
 import { expect } from "bun:test";
-import {
-  abytes,
-  bytesToHex,
-  hexToBytes,
-  numberToBytesBE,
-  utf8ToBytes,
-} from "../src/bytes.js";
-import { SCALAR_ENTROPY_SIZE } from "../src/curve.js";
+import { abytes, bytesToHex, hexToBytes, utf8ToBytes } from "../src/bytes.js";
 import { BtxError } from "../src/error.js";
 
 /** Bytes 0, 1, 2, … modulo 251, so no two in-range positions repeat within a page of them. */
@@ -20,15 +13,6 @@ function scriptedRandom(
 ): (byteLength: number) => Uint8Array {
   const queue = [...buffers];
   return (byteLength) => abytes(queue.shift() ?? new Uint8Array(), byteLength);
-}
-
-/** Supplies the entropy that yields the given seed and nonzero proof nonce. */
-function fixedRandom(
-  seed: Uint8Array,
-  nonce: bigint,
-): (byteLength: number) => Uint8Array {
-  // Noble maps the entropy to (value mod (q - 1)) + 1.
-  return scriptedRandom(seed, numberToBytesBE(nonce - 1n, SCALAR_ENTROPY_SIZE));
 }
 
 function expectBtxError(fn: () => unknown, code: BtxError["code"]): void {
@@ -45,7 +29,6 @@ function expectBtxError(fn: () => unknown, code: BtxError["code"]): void {
 export {
   bytesToHex,
   expectBtxError,
-  fixedRandom,
   hexToBytes,
   pattern,
   scriptedRandom,

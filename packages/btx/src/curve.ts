@@ -1,13 +1,7 @@
-import { getMinHashLength } from "@noble/curves/abstract/modular.js";
 import type { Fp12 } from "@noble/curves/abstract/tower.js";
 import type { WeierstrassPoint } from "@noble/curves/abstract/weierstrass.js";
 import { bls12_381 } from "@noble/curves/bls12-381.js";
-import {
-  abytes,
-  bytesToNumberBE,
-  numberToBytesBE,
-  randomBytes,
-} from "./bytes.js";
+import { abytes, bytesToNumberBE, numberToBytesBE } from "./bytes.js";
 import { BtxError } from "./error.js";
 
 const { G1, G2, pairing } = bls12_381;
@@ -25,8 +19,6 @@ const GT_SIZE = 576;
 /** CatBLST interleaves the two Fp6 halves at each Fp2 index; Noble stores each half together. */
 const GT_FP2_ORDER = [0, 3, 1, 4, 2, 5] as const;
 const FP2_SIZE = 96;
-/** Entropy length required by Noble's nonzero-scalar sampler. */
-const SCALAR_ENTROPY_SIZE = getMinHashLength(Fr.ORDER);
 
 /**
  * Decodes a 48-byte compressed G_1 slice from the wire decoder. Rejects non-canonical encodings,
@@ -68,17 +60,12 @@ function encodeScalar(scalar: bigint): Uint8Array {
 
 /** Reduces 64 big-endian bytes modulo the group order: wide reduction, never bit masking. */
 function wideScalar(bytes: Uint8Array): bigint {
-  abytes(bytes, 64);
   return Fr.create(bytesToNumberBE(bytes));
 }
 
 /** Samples a nonzero scalar with Noble's BLS12-381 secret-key sampler. */
-function randomScalar(
-  random: (byteLength: number) => Uint8Array = randomBytes,
-): bigint {
-  return bytesToNumberBE(
-    bls12_381.utils.randomSecretKey(random(SCALAR_ENTROPY_SIZE)),
-  );
+function randomScalar(): bigint {
+  return bytesToNumberBE(bls12_381.utils.randomSecretKey());
 }
 
 /**
@@ -143,7 +130,6 @@ export {
   Gt,
   pairing,
   randomScalar,
-  SCALAR_ENTROPY_SIZE,
   SCALAR_SIZE,
   wideScalar,
 };
