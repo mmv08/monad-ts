@@ -47,6 +47,8 @@ bun run packages/btx/tests/fixtures/generate.ts  # Regenerate BTX fixture vector
 
 `@monad-crypto/viem` is a Viem extension library providing read actions for the Monad staking precompile and WMON token.
 
+The separate `@monad-crypto/viem/encrypted` entry adds `sendEncryptedTransaction`, a wallet decorator, and chain response formatters. Keep this API small and reuse viem/Ox/BTX. Build BTX before type-checking or testing viem. Run `bun run --cwd packages/viem test:encrypted` for offline ETX tests; do not add ETX tests to the live-RPC setup. See `packages/viem/ENCRYPTED.md` and the encrypted section of its architecture guide. The viem package is private while it depends on the private BTX workspace package.
+
 ### Dual API surface
 
 The library exposes two ways to call every action:

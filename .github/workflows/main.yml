@@ -34,6 +34,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
+      - run: bun run --cwd packages/btx build
+      - run: bun run --cwd packages/viem build
       - run: bun run typecheck
 
   test:
@@ -43,4 +45,17 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@v1
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
+      - run: bun run --cwd packages/btx build
+      - run: bun run --cwd packages/viem build
       - run: bun test --timeout 15000 --coverage
+
+  encrypted:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run --cwd packages/btx build
+      - run: bun run --cwd packages/viem build
+      - run: bun run --cwd packages/viem typecheck
+      - run: bun run --cwd packages/viem test:encrypted

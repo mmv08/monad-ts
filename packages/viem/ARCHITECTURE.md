@@ -2,7 +2,32 @@
 
 This document describes the architecture of `@monad-crypto/viem` for security reviewers, auditors, and AI agents. For developer workflow see `CLAUDE.md`; for usage see `README.md`.
 
-## 1. Security Scope Summary
+## Encrypted entry point (Phase 2)
+
+`@monad-crypto/viem/encrypted` adds a separate write path. The numbered sections below describe the existing **root read-only entry**, not this new entry. Root imports do not load BTX.
+
+Public runtime exports are `sendEncryptedTransaction`, `encryptedWalletActions`, `encryptedFormatters`, and `EncryptedTransactionError`. See [ENCRYPTED.md](./ENCRYPTED.md) for the API and test commands.
+
+### Data and trust boundaries
+
+1. `sendEncryptedTransaction.ts` validates plaintext locally and copies nested access lists before awaiting reads. It requires explicit gas and a local viem account. It uses viem for chain ID, fees, pending nonce/nonce-manager handling, signing, and raw submission.
+2. `context.ts` validates one key/epoch/availability snapshot from the internal RPC or an injected provider. BTX checks the key's group encoding; the provider remains responsible for authenticity.
+3. `codec.ts` encodes selected real fields with Ox RLP, substitutes placeholders, builds the skeleton digest and versioned sender AD, and serializes type 8. Integer widths, shape, canonicality, signatures, and a finite 128 KiB reference limit are checked here. An iterative length scan bounds RLP nesting before Ox decodes it.
+4. BTX receives owned byte arrays for plaintext, key, and AD. It supplies padding and secure randomness. No testing entry enters sender code.
+5. The local account signs through viem's custom serializer. The action verifies the returned envelope and recovered sender before making one `eth_sendRawTransaction` request. Ambiguous failures carry the locally computed hash and RPC cause.
+6. `formatters.ts` installs transaction, receipt, and full-block handling through viem's existing chain configuration. Query views never replace original signed bytes. Decryption outcomes are explicit, so legitimate placeholder-valued payloads remain valid.
+
+Default preparation never simulates, estimates gas, creates access lists, or calls `eth_fillTransaction`. There is no plaintext fallback. Requests, routine errors, and logs do not include plaintext. Built-in fallback submission is rejected; custom transports must not retry writes. Read retries use viem's request machinery with a budget of two.
+
+### Dependencies, testing, and open specification details
+
+Runtime dependencies now include private `@monad-crypto/btx` and direct `ox@0.14.0`, with viem `>=2.47.0 <3` as a peer. The package is private while this required BTX dependency remains private. No new private-key storage, filesystem access, or environment access exists in sender code.
+
+`test/encrypted` holds offline codec, binding, malformed-input, lifecycle, privacy, and compile-only consumer tests. `mock.ts` uses the separate BTX testing entry and one trapdoor. Its receipts are scripted; it does not execute the EVM. `vector.json` records deterministic regression bytes and hashes; `fixtures.ts` alone imports internal fixed-randomness BTX tooling. Examples and tests stay outside the sender build.
+
+`TODO(spec)`: the codec uses typed Ethereum RLP, the ordinary three-field signature suffix, and the same unsigned encoding with empty ciphertext for the skeleton. The PDF fixes fields/order/binding but leaves those byte conventions partly implicit. Its total-size limit is chain policy; this reference uses 128 KiB. Tests establish regression behavior, not independent node interoperability.
+
+## 1. Security Scope Summary (root entry)
 
 - **Read-only**: Every action calls `readContract` (`eth_call`). Zero write operations. No transactions are signed or submitted.
 - **Hardcoded targets**: Contract addresses and ABIs are constants (`src/constants.ts`). The library never constructs an address at runtime.
