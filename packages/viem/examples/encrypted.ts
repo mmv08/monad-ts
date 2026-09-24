@@ -36,7 +36,6 @@ for (const data of [
   mock.include(hash);
   const receipt = await client.waitForTransactionReceipt({
     hash,
-    checkReplacement: false,
     retryCount: 2,
   });
   console.log("Scripted receipt (no EVM execution):", receipt.status);

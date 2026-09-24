@@ -49,47 +49,60 @@ function transaction(
   rpc: RpcTransaction | RpcEncryptedTransaction,
 ): Transaction | EncryptedTransaction {
   if (rpc.type !== "0x8") return formatTransaction(rpc);
-  const epoch = quantity(rpc.epoch, 64);
-  const encryptedFields = Number(quantity(rpc.encryptedFields, 8));
-  const concealedFields = selectedFields(encryptedFields);
-  hex(rpc.ciphertext);
-  if (rpc.encrypted !== undefined && rpc.encrypted !== true)
-    throw new EncryptedTransactionError(
-      "invalidResponse",
-      "Invalid encrypted transaction marker.",
-    );
-  if (
-    rpc.concealedFields !== undefined &&
-    (!Array.isArray(rpc.concealedFields) ||
-      rpc.concealedFields.length !== concealedFields.length ||
-      !rpc.concealedFields.every(
-        (field, index) =>
-          field === concealedFields[index] ||
-          (field === "input" && concealedFields[index] === "data"),
-      ))
-  )
-    throw new EncryptedTransactionError(
-      "invalidResponse",
-      "Concealed fields do not match the mask.",
-    );
-  // Viem returns the entire Transaction union even for a literal 0x2 input.
-  // Narrow that known mapping, without revalidating viem's output at runtime.
-  const formatted = formatTransaction({ ...rpc, type: "0x2" }) as Extract<
-    Transaction,
-    { type: "eip1559" }
-  >;
-  const decryptionStatus = status(rpc.decryptionStatus);
-  return {
-    ...formatted,
-    type: "encrypted",
-    typeHex: "0x8",
-    encrypted: true,
-    epoch,
-    encryptedFields,
-    ciphertext: rpc.ciphertext,
-    concealedFields,
-    decryptionStatus,
-  };
+  try {
+    const epoch = quantity(rpc.epoch, 64);
+    const encryptedFields = Number(quantity(rpc.encryptedFields, 8));
+    const concealedFields = selectedFields(encryptedFields);
+    hex(rpc.ciphertext);
+    if (rpc.encrypted !== undefined && rpc.encrypted !== true)
+      throw new EncryptedTransactionError(
+        "invalidResponse",
+        "Invalid encrypted transaction marker.",
+      );
+    if (
+      rpc.concealedFields !== undefined &&
+      (!Array.isArray(rpc.concealedFields) ||
+        rpc.concealedFields.length !== concealedFields.length ||
+        !rpc.concealedFields.every(
+          (field, index) =>
+            field === concealedFields[index] ||
+            (field === "input" && concealedFields[index] === "data"),
+        ))
+    )
+      throw new EncryptedTransactionError(
+        "invalidResponse",
+        "Concealed fields do not match the mask.",
+      );
+    // Viem returns the entire Transaction union even for a literal 0x2 input.
+    // Narrow that known mapping, without revalidating viem's output at runtime.
+    const formatted = formatTransaction({ ...rpc, type: "0x2" }) as Extract<
+      Transaction,
+      { type: "eip1559" }
+    >;
+    const decryptionStatus = status(rpc.decryptionStatus);
+    return {
+      ...formatted,
+      type: "encrypted",
+      typeHex: "0x8",
+      encrypted: true,
+      epoch,
+      encryptedFields,
+      ciphertext: rpc.ciphertext,
+      concealedFields,
+      decryptionStatus,
+    };
+  } catch (cause) {
+    if (
+      cause instanceof EncryptedTransactionError &&
+      cause.code === "invalidInput"
+    )
+      throw new EncryptedTransactionError(
+        "invalidResponse",
+        cause.shortMessage,
+        { cause },
+      );
+    throw cause;
+  }
 }
 
 type OrdinaryReceipt = TransactionReceipt & {

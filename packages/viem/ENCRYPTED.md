@@ -1,6 +1,6 @@
 # Encrypted transactions
 
-Internal reference implementation, built from this checkout. Requires viem 2.47+ (v2), Bun or Node 20.19+, or a modern browser with secure randomness. This build is private because it depends on the private BTX workspace package.
+Internal reference implementation, built from this checkout. Requires viem 2.56.8+ (v2), Bun or Node 20.19+, or a modern browser with secure randomness. This build is private because it depends on the private BTX workspace package.
 
 ## Build and run
 
@@ -37,7 +37,12 @@ import {
 } from "@monad-crypto/viem/encrypted";
 
 // Match this ID to your local backend; the browser example uses 1337.
-const chain = defineChain({ ...monad, id: 1337, formatters: encryptedFormatters });
+const chain = defineChain({
+  ...monad,
+  id: 1337,
+  formatters: encryptedFormatters,
+  supportsTransactionReplacementDetection: false,
+});
 const transport = http("http://127.0.0.1:8545/rpc", { retryCount: 0 });
 const account = privateKeyToAccount(`0x${"01".repeat(32)}`); // Test key only.
 const wallet = createWalletClient({ account, chain, transport })
@@ -51,7 +56,6 @@ const hash = await wallet.sendEncryptedTransaction({
 });
 const receipt = await client.waitForTransactionReceipt({
   hash,
-  checkReplacement: false,
   retryCount: 2,
 });
 if (receipt.type === "encrypted") {
@@ -66,6 +70,7 @@ The standalone `sendEncryptedTransaction(client, parameters, options?)` calls th
 - All four fields are concealed by default. `encryptedFields: ["to", "data"]` selects a nonempty subset. Exposing an access list can reveal the target.
 - `paddedLength` overrides BTX's 256-byte rounding. It excludes the four-byte encrypted length prefix. Exact-fit padding is allowed.
 - Nonce, chain ID, and fee caps can be supplied; otherwise the action uses viem public reads. Nonce and chain ID must fit JavaScript safe integers; the internal wire codec supports full u64 values.
+- A supplied priority fee participates in the missing fee cap calculation. Fee hooks receive only public fields. Recipient checks follow viem's address/checksum convention; unsupported fields set to `undefined` count as absent.
 - Gas estimation is never automatic. Estimate separately only on a node you trust with the plaintext, then pass `gas`.
 - Local private-key/HD accounts work, including viem nonce managers. JSON-RPC wallets are unsupported. A custom local signer must honor viem's serializer contract; the action trusts its output, as viem does.
 - The formatters support ordinary Ethereum transactions and ETX. On a chain with custom response formatters, explicitly compose its custom behavior; do not silently overwrite it.
@@ -77,6 +82,8 @@ The default context source is the **internal** `monad_getEncryptionContext` RPC,
 Both the decorator and standalone action accept `contextProvider: async ({ chainId, account }) => context` for fixtures or a supplied key source. It must return one coherent snapshot; source authentication remains the caller's responsibility. An unavailable key fails before encryption.
 
 Catch `EncryptedTransactionError` and inspect `code`. On `unknownOutcome`, `hash` identifies the attempted send. The original submission error remains in `cause`. The action does not retry submission, re-encrypt, or sign again. Unknown rejection reasons remain uncertain rather than proving rejection. A null lookup does not prove the node rejected a transaction.
+
+Malformed ETX query metadata reports `invalidResponse`; malformed key context reports `invalidContext`. Ordinary fields still use viem's formatting and errors.
 
 Use a single-attempt wallet transport. Built-in fallback is rejected because it can submit to another endpoint after a timeout. Custom transports must honor the same rule. Internal public reads allow two retries through viem's request machinery; deterministic local validation does not retry.
 
@@ -90,7 +97,7 @@ The reference total-size limit is 128 KiB, including the signature. This is a fi
 
 Pending queries show placeholders and concealed-field markers. Decrypted queries show an execution view while keeping the original hash, sender, and signature. Never serialize restored fields to compute the signed transaction hash. Missing lifecycle metadata yields `unknown`; valid zero/empty values never imply failure.
 
-Receipt decryption status and execution status are separate. Disable viem's replacement classification when waiting: concealed fields cannot establish whether another transaction changed the same intent. The mock drops expired pending transactions without a receipt; included failures use scripted full-gas-limit charges and nonce consumption.
+Receipt decryption status and execution status are separate. Set `supportsTransactionReplacementDetection: false` in the ETX chain configuration: concealed fields cannot establish whether another transaction changed the same intent. This disables replacement checks for all waits using that chain, including ordinary transactions; use `checkReplacement: false` per ETX wait instead if ordinary waits should retain detection. The mock drops expired pending transactions without a receipt; included failures use scripted full-gas-limit charges and nonce consumption.
 
 Validation follows viem's boundaries: encoding enforces wire widths, BTX enforces padding and key validity, and formatters normalize ordinary RPC fields rather than repeating admission. Context and added ETX metadata have their own checks. Signature range/low-s checks run at mock/node admission, not serialization. See the validation ownership table in [ARCHITECTURE.md](./ARCHITECTURE.md).
 
@@ -101,6 +108,8 @@ bun run packages/viem/test/encrypted/fixtures.ts
 ```
 
 Anvil EVM execution and comparison with a compatible node remain later phases.
+
+All mock-only decoding and admission helpers live in `test/encrypted/mock.ts`. The sender build contains no envelope parser or payload decoder. When replacing the mock, update its tests and examples without pruning backend helpers from `src`.
 
 ## Verification recorded for this change
 

@@ -64,7 +64,6 @@ export async function checkTypes() {
     }
   const receipt = await publicClient.waitForTransactionReceipt({
     hash,
-    checkReplacement: false,
   });
   if (receipt.type === "encrypted" && receipt.decryptionStatus === "failed") {
     const reason: string = receipt.failureReason;

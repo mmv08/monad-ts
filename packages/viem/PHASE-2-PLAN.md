@@ -8,6 +8,10 @@
 
 **Validation review:** [ARCHITECTURE.md](./ARCHITECTURE.md) records the final validation boundaries. The sender now follows viem's trusted local-account convention, without parsing/recovering signer output. Signature serialization only encodes; mock/node admission enforces scalar ranges and low-s. Ordinary RPC fields use viem formatting, while ETX context/metadata retain their own checks. This supersedes the broader validation proposed below.
 
+**Code review follow-up:** received-envelope and payload decoding now live in `test/encrypted/mock.ts`, together with their private RLP helpers. Sender code only encodes transactions. Recipient checks follow viem; fee estimation includes supplied public fee fields. ETX query metadata errors use `invalidResponse`. The tests keep all 15 field-mask cases without repeating the full signing/encryption flow for each mask, and use fixed RPC objects for formatter checks.
+
+**Dependency update:** the current baseline is viem `2.56.8` and Ox `0.14.45`. The mock now delegates RLP depth and boundary checks to viem's `fromRlp`, keeping canonicality and ETX shape checks. Mock/example chains disable replacement detection once through `supportsTransactionReplacementDetection`. The fork's 28-day dependency release-age restriction has been removed. Version references below record the original planning baseline.
+
 **Authority:** [parent delivery plan](../../../encrypted-transactions-plan.md), especially Phase 2 and section 7; [protocol PDF](../../../encrypted_txs_specs_wip.pdf), pp. 15–25 and 46–47. These files live beside the `monad-ts` checkout. Protocol changes must update the codec, fixtures, and this plan together.
 
 ## 1. Recommendation

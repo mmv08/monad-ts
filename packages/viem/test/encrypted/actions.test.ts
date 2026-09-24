@@ -9,6 +9,8 @@ import {
   erc20Abi,
   fallback,
   type Hash,
+  type Hex,
+  InvalidAddressError,
   zeroAddress,
 } from "viem";
 import { mnemonicToAccount, privateKeyToAccount } from "viem/accounts";
@@ -45,7 +47,14 @@ test("send, pending query, decryption, full block and ordinary receipt polling",
     functionName: "transfer",
     args: [to, 100n],
   });
-  const hash = await wallet.sendEncryptedTransaction({ ...request, data });
+  const storageKey = `0x${"ab".repeat(32)}` as const;
+  const accessAddress = "0x2222222222222222222222222222222222222222";
+  const hash = await wallet.sendEncryptedTransaction({
+    ...request,
+    data,
+    accessList: [{ address: accessAddress, storageKeys: [storageKey] }],
+  });
+  const preparationCalls = [...mock.calls];
   const pending = await publicClient.getTransaction({ hash });
   expect(pending.type).toBe("encrypted");
   if (pending.type !== "encrypted") throw new Error("Expected ETX");
@@ -56,7 +65,6 @@ test("send, pending query, decryption, full block and ordinary receipt polling",
   expect(mock.receipt(hash)).toBeNull();
   const waiting = publicClient.waitForTransactionReceipt({
     hash,
-    checkReplacement: false,
     retryCount: 2,
     timeout: 3000,
   });
@@ -73,17 +81,23 @@ test("send, pending query, decryption, full block and ordinary receipt polling",
     (await publicClient.getBlock({ includeTransactions: true })).transactions[0]
       ?.type,
   ).toBe("encrypted");
-  const methods = mock.calls.map((call) => call.method);
+  const methods = preparationCalls.map((call) => call.method);
   expect(
     methods.filter((method) => method === "eth_sendRawTransaction"),
   ).toHaveLength(1);
-  expect(methods).not.toContain("eth_estimateGas");
-  expect(methods).not.toContain("eth_call");
-  expect(methods).not.toContain("eth_fillTransaction");
-  for (const call of mock.calls.filter(
-    (call) => call.method !== "eth_sendRawTransaction",
-  ))
-    expect(JSON.stringify(call)).not.toContain(data.slice(2));
+  const allowed = new Set([
+    "eth_chainId",
+    "eth_getBlockByNumber",
+    "eth_maxPriorityFeePerGas",
+    "monad_getEncryptionContext",
+    "eth_getTransactionCount",
+    "eth_sendRawTransaction",
+  ]);
+  for (const call of preparationCalls) {
+    expect(allowed.has(call.method)).toBe(true);
+    for (const concealed of [to, data, accessAddress, storageKey])
+      expect(JSON.stringify(call)).not.toContain(concealed.slice(2));
+  }
 });
 
 test("unavailable context and invalid local input never submit", async () => {
@@ -190,9 +204,18 @@ test("fallback submission is rejected before sending", async () => {
 test("snapshot restores pending bytes, key context and outcomes", async () => {
   const { mock, wallet } = setup();
   const hash = await wallet.sendEncryptedTransaction(request);
+  const raw = mock.raw(hash);
+  const key = mock.key;
   const restore = mock.snapshot();
   mock.include(hash);
+  mock.key = createTestKey({ trapdoor: 43n });
+  mock.epoch = 2n;
+  mock.available = false;
   restore();
+  expect(mock.raw(hash)).toBe(raw);
+  expect(mock.key).toBe(key);
+  expect(mock.epoch).toBe(1n);
+  expect(mock.available).toBe(true);
   expect(mock.receipt(hash)).toBeNull();
   expect(mock.transaction(hash)?.decryptionStatus).toBe("pending");
 });
@@ -239,12 +262,15 @@ test("HD signer, exact padding, public subset and creation", async () => {
 
 test("input mutation during context lookup cannot change the signed intent", async () => {
   const { mock, wallet } = setup();
-  const accessList = [{ address: to, storageKeys: [] } as const];
+  const storageKeys: Hex[] = [`0x${"01".repeat(32)}`];
+  const accessList = [{ address: to, storageKeys } as const];
+  const expected = structuredClone(accessList);
   const hash = await sendEncryptedTransaction(
     wallet,
-    { ...request, accessList },
+    { ...request, accessList, encryptedFields: ["data"] },
     {
       contextProvider: async () => {
+        storageKeys[0] = `0x${"02".repeat(32)}`;
         accessList.length = 0;
         return {
           available: true,
@@ -254,15 +280,11 @@ test("input mutation during context lookup cannot change the signed intent", asy
       },
     },
   );
-  mock.include(hash);
-  expect(mock.transaction(hash)?.accessList).toHaveLength(1);
+  expect(mock.transaction(hash)?.accessList).toEqual(expected);
 });
 
-test("padding, fee and chain errors fail before submission", async () => {
+test("fee and chain errors fail before submission", async () => {
   const { mock, wallet } = setup();
-  await expect(
-    wallet.sendEncryptedTransaction({ ...request, paddedLength: 0 }),
-  ).rejects.toThrow();
   await expect(
     wallet.sendEncryptedTransaction({
       ...request,
@@ -276,4 +298,63 @@ test("padding, fee and chain errors fail before submission", async () => {
   expect(
     mock.calls.some(({ method }) => method === "eth_sendRawTransaction"),
   ).toBe(false);
+});
+
+test("recipient validation follows viem and absent forbidden fields are accepted", async () => {
+  const { mock, wallet } = setup();
+  await expect(
+    wallet.sendEncryptedTransaction({
+      ...request,
+      to: "0x7e5F4552091A69125d5DfCb7b8C2659029395Bdf",
+    }),
+  ).rejects.toBeInstanceOf(InvalidAddressError);
+  expect(mock.calls).toHaveLength(0);
+  const hash = await wallet.sendEncryptedTransaction({
+    ...request,
+    gasPrice: undefined,
+    type: undefined,
+    chain: undefined,
+  });
+  expect(mock.transaction(hash)).not.toBeNull();
+});
+
+test("partial fee caps follow viem and fee hooks receive only public fields", async () => {
+  const { mock, wallet } = setup();
+  for (const [fees, expected] of [
+    [
+      { maxPriorityFeePerGas: 10n },
+      { maxFeePerGas: "0xb", maxPriorityFeePerGas: "0xa" },
+    ],
+    [
+      { maxFeePerGas: 10n },
+      { maxFeePerGas: "0xa", maxPriorityFeePerGas: "0x1" },
+    ],
+  ] as const) {
+    const hash = await wallet.sendEncryptedTransaction({ ...request, ...fees });
+    expect(mock.transaction(hash)).toMatchObject(expected);
+  }
+  const hooked = createWalletClient({
+    account,
+    transport: mock.transport,
+    chain: {
+      ...chain,
+      fees: {
+        estimateFeesPerGas: async ({ request: publicRequest }) => {
+          expect(publicRequest).toEqual({
+            chainId: chain.id,
+            gas: request.gas,
+            maxFeePerGas: undefined,
+            maxPriorityFeePerGas: 10n,
+          });
+          return { maxFeePerGas: 20n, maxPriorityFeePerGas: 10n };
+        },
+      },
+    },
+  });
+  const hash = await sendEncryptedTransaction(hooked, {
+    ...request,
+    data: "0x1234",
+    maxPriorityFeePerGas: 10n,
+  });
+  expect(mock.transaction(hash)?.maxFeePerGas).toBe("0x14");
 });

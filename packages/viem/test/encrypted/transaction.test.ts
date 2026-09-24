@@ -17,15 +17,14 @@ import { privateKeyToAccount } from "viem/accounts";
 import {
   associatedData,
   conceal,
-  decodePayload,
   type Envelope,
   encodePayload,
   maskFor,
-  parseEnvelope,
   selectedFields,
   serializeEnvelope,
   serializeTransaction,
 } from "../../src/encrypted/codec.js";
+import { decodePayload, parseEnvelope } from "./mock.js";
 
 export const account = privateKeyToAccount(`0x${"01".repeat(32)}`);
 export const target = "0x1111111111111111111111111111111111111111";
@@ -53,46 +52,61 @@ export const base: Envelope = {
 
 describe("type-8 codec", () => {
   for (let mask = 1; mask < 16; mask++)
-    test(`mask ${mask}: encryption, signed bytes, recovery, all-or-nothing restoration`, async () => {
+    test(`mask ${mask}: selected fields and placeholders round-trip`, () => {
       const envelope = {
         ...base,
         ...conceal(payload, mask),
         encryptedFields: mask,
       };
       const plaintext = encodePayload(payload, mask);
-      const ad = associatedData(envelope, account.address);
-      envelope.ciphertext = bytesToHex(
-        serializeCiphertext(
-          encrypt({
-            plaintext: hexToBytes(plaintext),
-            associatedData: hexToBytes(ad),
-            encryptionKey: key.encryptionKey,
-          }),
-        ),
-      );
-      const raw = await account.signTransaction(envelope, {
-        serializer: serializeTransaction,
-      });
-      const parsed = parseEnvelope(raw);
-      expect(parsed.envelope).toEqual(envelope);
-      expect(
-        await recoverAddress({
-          hash: keccak256(serializeEnvelope(envelope)),
-          signature: parsed.signature,
-        }),
-      ).toBe(account.address);
-      const decrypted = key.decrypt(
-        hexToBytes(envelope.ciphertext),
-        hexToBytes(ad),
-      );
-      expect(decrypted).not.toBeNull();
-      if (!decrypted) throw new Error("Expected plaintext");
-      expect(decodePayload(bytesToHex(decrypted.plaintext), envelope)).toEqual(
-        payload,
-      );
-      expect(() => decodePayload(Rlp.fromHex([]), envelope)).toThrow();
+      expect(decodePayload(plaintext, envelope)).toEqual(payload);
       expect(maskFor(selectedFields(mask))).toBe(mask);
     });
+
+  test("encrypted envelope signs, recovers and decrypts", async () => {
+    const envelope = { ...base };
+    const plaintext = encodePayload(payload, 15);
+    const ad = associatedData(envelope, account.address);
+    envelope.ciphertext = bytesToHex(
+      serializeCiphertext(
+        encrypt({
+          plaintext: hexToBytes(plaintext),
+          associatedData: hexToBytes(ad),
+          encryptionKey: key.encryptionKey,
+        }),
+      ),
+    );
+    const raw = await account.signTransaction(envelope, {
+      serializer: serializeTransaction,
+    });
+    const parsed = parseEnvelope(raw);
+    expect(parsed.envelope).toEqual(envelope);
+    expect(
+      await recoverAddress({
+        hash: keccak256(serializeEnvelope(envelope)),
+        signature: parsed.signature,
+      }),
+    ).toBe(account.address);
+    const decrypted = key.decrypt(
+      hexToBytes(envelope.ciphertext),
+      hexToBytes(ad),
+    );
+    expect(decrypted).not.toBeNull();
+    if (!decrypted) throw new Error("Expected plaintext");
+    expect(decodePayload(bytesToHex(decrypted.plaintext), envelope)).toEqual(
+      payload,
+    );
+  });
+
+  test("payload decoding rejects wrong arity and never restores only some fields", () => {
+    const original = structuredClone(base);
+    expect(() => decodePayload(Rlp.fromHex([]), base)).toThrow("field count");
+    // The recipient decodes first; the nested list is invalid as a value.
+    expect(() =>
+      decodePayload(Rlp.fromHex([target, [], "0x", []]), base),
+    ).toThrow("Expected RLP bytes");
+    expect(base).toEqual(original);
+  });
 
   test("creation and legitimate placeholders are distinct", () => {
     for (const to of [null, zeroAddress]) {
@@ -105,7 +119,13 @@ describe("type-8 codec", () => {
   });
 
   test("every public field and sender binds the proof", () => {
-    const ad = associatedData(base, account.address);
+    const envelope = {
+      ...base,
+      ...payload,
+      data: "0x" as const,
+      encryptedFields: 4,
+    };
+    const ad = associatedData(envelope, account.address);
     const ciphertext = serializeCiphertext(
       encrypt({
         plaintext: new Uint8Array(),
@@ -126,7 +146,7 @@ describe("type-8 codec", () => {
           ciphertext,
           hexToBytes(
             associatedData(
-              { ...base, [field]: base[field] + 1n },
+              { ...envelope, [field]: envelope[field] + 1n },
               account.address,
             ),
           ),
@@ -134,11 +154,42 @@ describe("type-8 codec", () => {
       ).toThrow();
     }
     expect(() =>
-      admitCiphertext(ciphertext, hexToBytes(associatedData(base, target))),
+      admitCiphertext(ciphertext, hexToBytes(associatedData(envelope, target))),
+    ).toThrow();
+    for (const changed of [
+      { ...envelope, encryptedFields: 5 },
+      { ...envelope, to: zeroAddress },
+      { ...envelope, value: 124n },
+      { ...envelope, accessList: [] },
+    ])
+      expect(() =>
+        admitCiphertext(
+          ciphertext,
+          hexToBytes(associatedData(changed, account.address)),
+        ),
+      ).toThrow();
+
+    const exposedData = { ...base, ...payload, value: 0n, encryptedFields: 2 };
+    const dataCiphertext = serializeCiphertext(
+      encrypt({
+        plaintext: hexToBytes(encodePayload(payload, 2)),
+        associatedData: hexToBytes(
+          associatedData(exposedData, account.address),
+        ),
+        encryptionKey: key.encryptionKey,
+      }),
+    );
+    expect(() =>
+      admitCiphertext(
+        dataCiphertext,
+        hexToBytes(
+          associatedData({ ...exposedData, data: "0x5678" }, account.address),
+        ),
+      ),
     ).toThrow();
   });
 
-  test("rejects invalid masks, values, lengths and signatures", async () => {
+  test("rejects invalid masks and wire integer widths", () => {
     for (const mask of [0, 16, -1, 1.5])
       expect(() => selectedFields(mask)).toThrow();
     expect(() => maskFor(["to", "to"])).toThrow();
@@ -149,6 +200,9 @@ describe("type-8 codec", () => {
     expect(() =>
       encodePayload({ ...payload, value: 1n << 256n }, 15),
     ).toThrow();
+  });
+
+  test("mock parser rejects malformed and noncanonical envelopes", async () => {
     const raw = await account.signTransaction(base, {
       serializer: serializeTransaction,
     });
@@ -166,12 +220,6 @@ describe("type-8 codec", () => {
         serializeEnvelope({ ...base, to: target }, parsed.signature),
       ),
     ).toThrow();
-    expect(() =>
-      serializeEnvelope(base, {
-        ...parsed.signature,
-        s: `0x${"ff".repeat(32)}`,
-      }),
-    ).not.toThrow();
     expect(() =>
       decodePayload("0xc100", { ...base, encryptedFields: 2 }),
     ).toThrow();

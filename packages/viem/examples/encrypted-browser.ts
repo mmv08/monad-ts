@@ -16,6 +16,7 @@ const chain = defineChain({
   nativeCurrency: { name: "Monad", symbol: "MON", decimals: 18 },
   rpcUrls: { default: { http: ["http://127.0.0.1:8545/rpc"] } },
   formatters: encryptedFormatters,
+  supportsTransactionReplacementDetection: false,
 });
 const transport = http(chain.rpcUrls.default.http[0], { retryCount: 0 });
 const wallet = createWalletClient({
@@ -35,7 +36,6 @@ const result = await (async () => {
     });
     const receipt = await publicClient.waitForTransactionReceipt({
       hash,
-      checkReplacement: false,
       retryCount: 2,
     });
     return `Scripted receipt: ${receipt.status}\nHash: ${hash}\nNo EVM execution or threshold privacy.`;

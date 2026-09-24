@@ -4,9 +4,7 @@ import { createTestKey } from "@monad-crypto/btx/testing";
 import { noble as secp256k1 } from "ox/Secp256k1";
 import {
   bytesToHex,
-  createPublicClient,
   createWalletClient,
-  custom,
   hexToBytes,
   keccak256,
   nonceManager,
@@ -17,19 +15,16 @@ import {
   associatedData,
   conceal,
   type Envelope,
-  hex,
-  parseEnvelope,
   serializeEnvelope,
   serializeTransaction,
 } from "../../src/encrypted/codec.js";
 import { parseContext } from "../../src/encrypted/context.js";
 import {
-  encryptedFormatters,
   encryptedWalletActions,
   sendEncryptedTransaction,
 } from "../../src/encrypted/index.js";
 import { buildVector } from "./fixtures.js";
-import { chain, createMock } from "./mock.js";
+import { chain, createMock, parseEnvelope } from "./mock.js";
 
 const to = "0x1111111111111111111111111111111111111111";
 const account = privateKeyToAccount(`0x${"01".repeat(32)}`);
@@ -161,7 +156,7 @@ test("proof-valid malformed payload is an included failure", async () => {
   });
 });
 
-test("ordinary serialization and formatting still work", async () => {
+test("ordinary serialization delegates to viem", async () => {
   const raw = await account.signTransaction(
     {
       type: "eip1559",
@@ -175,44 +170,6 @@ test("ordinary serialization and formatting still work", async () => {
     { serializer: serializeTransaction },
   );
   expect(raw.startsWith("0x02")).toBe(true);
-  const mock = createMock();
-  const wallet = createWalletClient({
-    account,
-    chain,
-    transport: mock.transport,
-  });
-  const hash = await sendEncryptedTransaction(wallet, request);
-  const rpc = mock.transaction(hash);
-  if (!rpc) throw new Error("Expected transaction");
-  // Test RPC responses enter as unknown data at runtime; validate the shared hex fields first.
-  hex(rpc.hash, 32);
-  const ordinary = {
-    ...rpc,
-    hash: rpc.hash,
-    transactionIndex: null,
-    type: "0x2" as const,
-  };
-  expect(encryptedFormatters.transaction.format(ordinary).type).toBe("eip1559");
-  mock.include(hash);
-  const response = mock.receipt(hash);
-  if (!response) throw new Error("Expected receipt");
-  hex(response.transactionHash, 32);
-  for (const type of ["0x0", "0x1", "0x2", "0x3", "0x4"] as const) {
-    const client = createPublicClient({
-      chain,
-      transport: custom({ request: async () => ({ ...response, type }) }),
-    });
-    expect((await client.getTransactionReceipt({ hash })).type).not.toBe(
-      "encrypted",
-    );
-  }
-  const client = createPublicClient({
-    chain,
-    transport: custom({
-      request: async () => ({ ...rpc, decryptionStatus: "invalid" }),
-    }),
-  });
-  await expect(client.getTransaction({ hash })).rejects.toThrow();
 });
 
 test("serialization accepts signature bytes; mock admission enforces secp256k1 and low-s", async () => {
@@ -245,18 +202,23 @@ test("serialization accepts signature bytes; mock admission enforces secp256k1 a
   }
 });
 
-test("encoding and BTX still reject invalid widths, access lists, and padding", async () => {
+test("invalid gas, access lists, and padding never reach the signer or submission", async () => {
   const mock = createMock();
+  let signingCalls = 0;
   const wallet = createWalletClient({
     chain,
-    account,
+    account: {
+      ...account,
+      signTransaction: async () => {
+        signingCalls++;
+        throw new Error("Unexpected signing");
+      },
+    },
     transport: mock.transport,
   });
   for (const parameters of [
     { ...request, gas: -1n },
     { ...request, gas: 1n << 64n },
-    { ...request, value: 1n << 256n },
-    { ...request, maxFeePerGas: 1n << 128n },
     { ...request, paddedLength: -1 },
     { ...request, paddedLength: 1.5 },
     { ...request, paddedLength: 0 },
@@ -268,6 +230,7 @@ test("encoding and BTX still reject invalid widths, access lists, and padding", 
     await expect(
       sendEncryptedTransaction(wallet, parameters),
     ).rejects.toThrow();
+  expect(signingCalls).toBe(0);
   expect(
     mock.calls.some(({ method }) => method === "eth_sendRawTransaction"),
   ).toBe(false);

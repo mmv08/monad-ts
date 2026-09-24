@@ -44,7 +44,7 @@
   },
   "peerDependencies": {
     "typescript": ">=5.4.0",
-    "viem": ">=2.47.0 <3"
+    "viem": ">=2.56.8 <3"
   },
   "peerDependenciesMeta": {
     "typescript": {
@@ -53,9 +53,9 @@
   },
   "dependencies": {
     "@monad-crypto/btx": "workspace:*",
-    "ox": "0.14.0"
+    "ox": "0.14.45"
   },
   "devDependencies": {
-    "viem": "2.47.0"
+    "viem": "2.56.8"
   }
 }

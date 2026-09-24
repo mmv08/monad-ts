@@ -1,25 +1,33 @@
 import { admitCiphertext } from "@monad-crypto/btx";
 import { createTestKey } from "@monad-crypto/btx/testing";
+import * as Rlp from "ox/Rlp";
 import { noble as secp256k1 } from "ox/Secp256k1";
 import {
+  type AccessList,
+  type Address,
   bytesToHex,
   custom,
   defineChain,
+  fromRlp,
   type Hex,
   hexToBytes,
   keccak256,
+  type Signature,
   toHex,
 } from "viem";
 import { publicKeyToAddress } from "viem/accounts";
 import {
   associatedData,
-  decodePayload,
+  conceal,
   type Envelope,
+  hex,
+  MAX_TRANSACTION_BYTES,
   type Payload,
-  parseEnvelope,
   selectedFields,
   serializeEnvelope,
+  uint,
 } from "../../src/encrypted/codec.js";
+import { assertInput } from "../../src/encrypted/errors.js";
 import { encryptedFormatters } from "../../src/encrypted/index.js";
 
 export const chain = defineChain({
@@ -28,6 +36,7 @@ export const chain = defineChain({
   nativeCurrency: { name: "Monad", symbol: "MON", decimals: 18 },
   rpcUrls: { default: { http: ["http://127.0.0.1:8545"] } },
   formatters: encryptedFormatters,
+  supportsTransactionReplacementDetection: false,
 });
 
 const zeroHash = `0x${"00".repeat(32)}` as const;
@@ -49,6 +58,142 @@ export function rpcError(reason: string) {
     code: -32000,
     data: { reason },
   });
+}
+
+// Received-byte decoding belongs to this test backend, not the sender library.
+type RlpValue = Hex | readonly RlpValue[];
+
+function list(value: RlpValue, length?: number): readonly RlpValue[] {
+  assertInput(
+    Array.isArray(value) && (length === undefined || value.length === length),
+    "Invalid RLP list.",
+  );
+  return value;
+}
+
+function bytes(value: RlpValue): Hex {
+  assertInput(typeof value === "string", "Expected RLP bytes.");
+  return value;
+}
+
+function decodeInteger(value: RlpValue, bits: number): bigint {
+  const raw = bytes(value);
+  assertInput(
+    raw === "0x" || !raw.startsWith("0x00"),
+    "Noncanonical RLP integer.",
+  );
+  const result = raw === "0x" ? 0n : BigInt(raw);
+  uint(result, bits);
+  return result;
+}
+
+function decodeTo(value: RlpValue): Address | null {
+  const raw = bytes(value);
+  if (raw === "0x") return null;
+  hex(raw, 20);
+  return raw;
+}
+
+function decodeAccessList(value: RlpValue): AccessList {
+  return list(value).map((entry) => {
+    const [address, keys] = list(entry, 2);
+    const decodedAddress = bytes(address);
+    hex(decodedAddress, 20);
+    return {
+      address: decodedAddress,
+      storageKeys: list(keys).map((key) => {
+        const decodedKey = bytes(key);
+        hex(decodedKey, 32);
+        return decodedKey;
+      }),
+    };
+  });
+}
+
+function decodeList(raw: Hex): readonly RlpValue[] {
+  assertInput(
+    raw.length / 2 - 1 <= MAX_TRANSACTION_BYTES,
+    "Transaction exceeds the reference size limit.",
+  );
+  // Viem bounds recursion and rejects trailing bytes and list-boundary overruns.
+  const result = list(fromRlp(raw));
+  assertInput(
+    Rlp.fromHex(result).toLowerCase() === raw.toLowerCase(),
+    "Noncanonical RLP encoding.",
+  );
+  return result;
+}
+
+export function decodePayload(raw: Hex, envelope: Envelope): Payload {
+  const values = decodeList(raw);
+  const selection = selectedFields(envelope.encryptedFields);
+  assertInput(
+    values.length === selection.length,
+    "Incorrect encrypted payload field count.",
+  );
+  const restored: Payload = {
+    to: envelope.to,
+    value: envelope.value,
+    data: envelope.data,
+    accessList: envelope.accessList,
+  };
+  selection.forEach((field, index) => {
+    const value = values[index];
+    if (field === "to") restored.to = decodeTo(value);
+    else if (field === "value") restored.value = decodeInteger(value, 256);
+    else if (field === "data") restored.data = bytes(value);
+    else restored.accessList = decodeAccessList(value);
+  });
+  return restored;
+}
+
+export function parseEnvelope(raw: Hex): {
+  envelope: Envelope;
+  signature: Signature;
+} {
+  assertInput(
+    raw.length / 2 - 1 <= MAX_TRANSACTION_BYTES,
+    "Transaction exceeds the reference size limit.",
+  );
+  assertInput(raw.startsWith("0x08"), "Expected a type-8 transaction.");
+  const values = list(decodeList(`0x${raw.slice(4)}`), 15);
+  const envelope: Envelope = {
+    type: "encrypted",
+    chainId: decodeInteger(values[0], 64),
+    nonce: decodeInteger(values[1], 64),
+    maxPriorityFeePerGas: decodeInteger(values[2], 128),
+    maxFeePerGas: decodeInteger(values[3], 128),
+    gas: decodeInteger(values[4], 64),
+    to: decodeTo(values[5]),
+    value: decodeInteger(values[6], 256),
+    data: bytes(values[7]),
+    accessList: decodeAccessList(values[8]),
+    epoch: decodeInteger(values[9], 64),
+    encryptedFields: Number(decodeInteger(values[10], 8)),
+    ciphertext: bytes(values[11]),
+  };
+  selectedFields(envelope.encryptedFields);
+  assertInput(
+    envelope.chainId > 0n &&
+      envelope.maxPriorityFeePerGas <= envelope.maxFeePerGas,
+    "Invalid chain ID or fee caps.",
+  );
+  const placeholders = conceal(envelope, envelope.encryptedFields);
+  assertInput(
+    envelope.to === placeholders.to &&
+      envelope.value === placeholders.value &&
+      envelope.data === placeholders.data &&
+      (!(envelope.encryptedFields & 8) || envelope.accessList.length === 0),
+    "Concealed fields must use their placeholders.",
+  );
+  const parity = decodeInteger(values[12], 8);
+  assertInput(parity === 0n || parity === 1n, "Invalid signature parity.");
+  const signature: Signature = {
+    yParity: parity === 0n ? 0 : 1,
+    r: toHex(decodeInteger(values[13], 256), { size: 32 }),
+    s: toHex(decodeInteger(values[14], 256), { size: 32 }),
+  };
+  return { envelope, signature };
 }
 
 /** Test-only, single-trapdoor backend. Receipts are scripted, never EVM execution. */
@@ -133,7 +278,7 @@ export function createMock() {
             throw rpcError("insufficientReserve");
           const ad = associatedData(envelope, sender);
           admitCiphertext(hexToBytes(envelope.ciphertext), hexToBytes(ad), {
-            maxMaskedPayloadLength: 128 * 1024,
+            maxMaskedPayloadLength: MAX_TRANSACTION_BYTES,
           });
           const hash = keccak256(raw as Hex);
           if (!entries.has(hash))

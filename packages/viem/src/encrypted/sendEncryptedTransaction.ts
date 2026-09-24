@@ -1,16 +1,20 @@
 import {
+  CIPHERTEXT_OVERHEAD,
   encrypt,
   paddedLengthFor,
   serializeCiphertext,
 } from "@monad-crypto/btx";
 import {
   type Account,
+  BaseError,
   bytesToHex,
   type Chain,
   type Client,
   createClient,
   custom,
   hexToBytes,
+  InvalidAddressError,
+  isAddress,
   keccak256,
   type Transport,
 } from "viem";
@@ -94,7 +98,10 @@ export async function sendEncryptedTransaction<
       "Use a single-attempt wallet transport for encrypted submission.",
     );
   for (const field of forbidden)
-    assertInput(!(field in parameters), "Unsupported transaction field.");
+    assertInput(
+      parameters[field] === undefined,
+      "Unsupported transaction field.",
+    );
   // Required gas is a privacy boundary: never substitute remote estimation.
   assertInput(
     typeof parameters.gas === "bigint",
@@ -104,6 +111,8 @@ export async function sendEncryptedTransaction<
     parameters.to !== null || parameters.data !== undefined,
     "Contract creation requires initcode.",
   );
+  if (parameters.to !== null && !isAddress(parameters.to))
+    throw new InvalidAddressError({ address: parameters.to });
   const payload: Payload = {
     to: parameters.to,
     value: parameters.value ?? 0n,
@@ -119,7 +128,7 @@ export async function sendEncryptedTransaction<
   const paddedLength =
     parameters.paddedLength ?? paddedLengthFor(plaintext.length);
   assertInput(
-    paddedLength + 136 <= MAX_TRANSACTION_BYTES,
+    paddedLength + CIPHERTEXT_OVERHEAD + 4 <= MAX_TRANSACTION_BYTES,
     "Padding exceeds the reference size limit.",
   );
   // Snapshot caller-owned options before awaiting any reads.
@@ -145,6 +154,18 @@ export async function sendEncryptedTransaction<
       (request.chainId === undefined || request.chainId === chainId),
     "Chain ID mismatch.",
   );
+  // Viem 2.56.8 forwards request to its fee estimator, although the public action's
+  // parameter type only exposes type/chain. Keep this request public-field-only.
+  const feeParameters = {
+    type: "eip1559" as const,
+    chain: client.chain,
+    request: {
+      chainId,
+      gas: request.gas,
+      maxFeePerGas: request.maxFeePerGas,
+      maxPriorityFeePerGas: request.maxPriorityFeePerGas,
+    },
+  };
   const fees =
     request.maxFeePerGas !== undefined &&
     request.maxPriorityFeePerGas !== undefined
@@ -152,7 +173,7 @@ export async function sendEncryptedTransaction<
           maxFeePerGas: request.maxFeePerGas,
           maxPriorityFeePerGas: request.maxPriorityFeePerGas,
         }
-      : await estimateFeesPerGas(reader);
+      : await estimateFeesPerGas(reader, feeParameters);
   const maxFeePerGas = request.maxFeePerGas ?? fees.maxFeePerGas;
   const maxPriorityFeePerGas =
     request.maxPriorityFeePerGas ?? fees.maxPriorityFeePerGas;
@@ -225,22 +246,23 @@ export async function sendEncryptedTransaction<
     returnedHash = await sendRawTransaction(client, { serializedTransaction });
   } catch (cause) {
     // Only a structured backend rejection establishes rejection. Generic RPC errors may follow acceptance.
-    let error: unknown = cause;
     let reason: unknown;
-    for (
-      let depth = 0;
-      depth < 8 && error && typeof error === "object";
-      depth++
-    ) {
+    const findReason = (error: unknown) => {
       if (
+        error &&
+        typeof error === "object" &&
         "data" in error &&
         error.data &&
         typeof error.data === "object" &&
         "reason" in error.data
-      )
+      ) {
         reason = error.data.reason;
-      error = "cause" in error ? error.cause : undefined;
-    }
+        return true;
+      }
+      return false;
+    };
+    if (cause instanceof BaseError) cause.walk(findReason);
+    else findReason(cause);
     const code =
       typeof reason === "string" && rejectionReasons.has(reason)
         ? reason === "expiredEpoch"
