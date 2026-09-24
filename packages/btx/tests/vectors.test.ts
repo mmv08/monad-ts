@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { encryptWithRandom, pad } from "../src/btx.js";
 import {
   decodeEncryptionKey,
@@ -10,14 +9,8 @@ import {
 import { expandR, hRho } from "../src/hash.js";
 import { admitCiphertext, serializeCiphertext } from "../src/index.js";
 import { createTestKey } from "../src/testing.js";
-import type { Vector } from "./fixtures/vectors.js";
+import vectors from "./fixtures/vectors.json" with { type: "json" };
 import { bytesToHex, fixedRandom, hexToBytes } from "./utils.js";
-
-const vectorsFile = readFileSync(
-  new URL("./fixtures/vectors.json", import.meta.url),
-  "utf8",
-);
-const vectors = JSON.parse(vectorsFile) as Vector[];
 
 describe("fixture vectors", () => {
   test.each(vectors.map((v) => [v.name, v] as const))("%s", (_, vector) => {

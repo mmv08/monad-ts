@@ -14,7 +14,7 @@ type Ciphertext = {
   readonly proof: Uint8Array;
 };
 
-/** Options for {@link deserializeCiphertext}. */
+/** Wire decoding options, also used by admission and test decryption. */
 type DeserializeOptions = {
   /**
    * Largest accepted maskedPayload length (C_2), including the 4-byte plaintext-length prefix.
@@ -24,18 +24,6 @@ type DeserializeOptions = {
    */
   readonly maxMaskedPayloadLength?: number;
 };
-
-/** Internal decoded values, reused only within one synchronous operation. */
-function decodeCiphertext(ciphertext: Ciphertext) {
-  abytes(ciphertext.maskedSeed, MASKED_SEED_SIZE);
-  abytes(ciphertext.maskedPayload);
-  return {
-    ciphertext,
-    commitment: decodeG1(ciphertext.commitment),
-    c: decodeScalar(ciphertext.proof.subarray(0, SCALAR_SIZE)),
-    s: decodeScalar(ciphertext.proof.subarray(SCALAR_SIZE)),
-  };
-}
 
 /** Byte length of C_1. */
 const MASKED_SEED_SIZE = 16;
@@ -70,9 +58,9 @@ function serializeCiphertext(ciphertext: Ciphertext): Uint8Array {
 
 /**
  * deserialize_ciphertext: decodes the wire form, rejecting anything that is not its one canonical
- * serialization. The point is fully validated here, including subgroup membership, so a decoded
- * ciphertext is safe to hand to `assertValidCiphertext`. Decoding does not check the client proof
- * or reject an identity commitment.
+ * serialization. Internal codec entry for format tests; consumers use admitCiphertext.
+ * The point is fully validated here, including subgroup membership. Decoding does not check
+ * the client proof or reject an identity commitment.
  *
  * @throws {BtxError} If the wire encoding, masked-payload length, or size limit is rejected.
  * @throws {TypeError} If bytes is not a Uint8Array.
@@ -129,13 +117,17 @@ function decodeCiphertextBytes(
     bytes.subarray(payloadStart, payloadStart + payloadLength),
   );
   const proof = Uint8Array.from(bytes.subarray(payloadStart + payloadLength));
-  return decodeCiphertext({ commitment, maskedSeed, maskedPayload, proof });
+  return {
+    ciphertext: { commitment, maskedSeed, maskedPayload, proof },
+    commitment: decodeG1(commitment),
+    c: decodeScalar(proof.subarray(0, SCALAR_SIZE)),
+    s: decodeScalar(proof.subarray(SCALAR_SIZE)),
+  };
 }
 
 export type { Ciphertext, DeserializeOptions };
 export {
   CIPHERTEXT_OVERHEAD,
-  decodeCiphertext,
   decodeCiphertextBytes,
   deserializeCiphertext,
   LENGTH_PREFIX_SIZE,

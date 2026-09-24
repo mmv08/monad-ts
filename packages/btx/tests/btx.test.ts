@@ -6,6 +6,7 @@ import {
   concatBytes,
   numberToBytesBE,
   u32be,
+  xorBytes,
 } from "../src/bytes.js";
 import {
   decodeEncryptionKey,
@@ -19,9 +20,8 @@ import {
 } from "../src/curve.js";
 import * as hashes from "../src/hash.js";
 import {
-  assertValidCiphertext,
+  admitCiphertext,
   type Ciphertext,
-  deserializeCiphertext,
   encrypt,
   paddedLengthFor,
   serializeCiphertext,
@@ -107,49 +107,19 @@ describe("padding", () => {
 });
 
 describe("encrypt and decrypt", () => {
-  test.each([
-    0, 1, 255, 256, 257, 1000,
-  ])("round-trips a %i-byte plaintext with default padding", (length) => {
-    const plaintext = pattern(length);
+  test("round-trips through public encryption with default padding", () => {
+    const plaintext = pattern(30);
     const ciphertext = encrypt({
       plaintext,
       encryptionKey: key.encryptionKey,
       associatedData: ad,
     });
 
-    expect(ciphertext.maskedPayload).toHaveLength(4 + paddedLengthFor(length));
+    expect(ciphertext.maskedPayload).toHaveLength(260);
     const decrypted = key.decrypt(serializeCiphertext(ciphertext), ad);
 
     expect(decrypted?.plaintext).toEqual(plaintext);
     expect(decrypted?.seed).toHaveLength(16);
-  });
-
-  test("round-trips an exact-fit ciphertext, including trailing zeroes", () => {
-    const plaintext = Uint8Array.from([1, 2, 3, 0, 0, 0]);
-    const ciphertext = encrypt({
-      plaintext,
-      encryptionKey: key.encryptionKey,
-      associatedData: ad,
-      paddedLength: plaintext.length,
-    });
-
-    expect(ciphertext.maskedPayload).toHaveLength(4 + plaintext.length);
-    expect(key.decrypt(ciphertext, ad)?.plaintext).toEqual(plaintext);
-  });
-
-  test("is a deterministic function of (AD, P, S) and the proof nonce", () => {
-    const seed = pattern(16);
-    const nonce = 0x1234n;
-    const plaintext = utf8ToBytes("same inputs");
-    const parameters = {
-      plaintext,
-      encryptionKey: key.encryptionKey,
-      associatedData: ad,
-    };
-    const first = encryptWithRandom(parameters, fixedRandom(seed, nonce));
-    const second = encryptWithRandom(parameters, fixedRandom(seed, nonce));
-
-    expect(serializeCiphertext(first)).toEqual(serializeCiphertext(second));
   });
 
   test("draws fresh randomness by default", () => {
@@ -178,7 +148,9 @@ describe("encrypt and decrypt", () => {
       randomBytes: scriptedRandom(),
     });
 
-    expect(key.decrypt(ciphertext, ad)?.plaintext).toEqual(plaintext);
+    expect(key.decrypt(serializeCiphertext(ciphertext), ad)?.plaintext).toEqual(
+      plaintext,
+    );
   });
 
   test("round-trips with a generated test key", () => {
@@ -190,23 +162,9 @@ describe("encrypt and decrypt", () => {
       associatedData: ad,
     });
 
-    expect(generated.decrypt(ciphertext, ad)?.plaintext).toEqual(plaintext);
-  });
-
-  test("reuses the admitted commitment throughout test decryption", () => {
-    const plaintext = utf8ToBytes("one point decode");
-    const ciphertext = encrypt({
-      plaintext,
-      encryptionKey: key.encryptionKey,
-      associatedData: ad,
-    });
-    const decode = spyOn(G1.Point, "fromBytes");
-    try {
-      expect(key.decrypt(ciphertext, ad)?.plaintext).toEqual(plaintext);
-      expect(decode).toHaveBeenCalledTimes(1);
-    } finally {
-      decode.mockRestore();
-    }
+    expect(
+      generated.decrypt(serializeCiphertext(ciphertext), ad)?.plaintext,
+    ).toEqual(plaintext);
   });
 
   test("derives r once per seed and resamples a zero result", () => {
@@ -228,7 +186,7 @@ describe("encrypt and decrypt", () => {
       expand.mockRestore();
     }
 
-    const decrypted = key.decrypt(ciphertext, ad);
+    const decrypted = key.decrypt(serializeCiphertext(ciphertext), ad);
     expect(decrypted?.plaintext).toEqual(plaintext);
     expect(decrypted?.seed).toEqual(seed);
   });
@@ -339,22 +297,9 @@ describe("encrypt and decrypt", () => {
       "InvalidLength",
     );
   });
-
-  test("rejects invalid padding before decoding the key", () => {
-    expectBtxError(
-      () =>
-        encrypt({
-          plaintext: pattern(10),
-          encryptionKey: new Uint8Array(0),
-          associatedData: ad,
-          paddedLength: 9,
-        }),
-      "InvalidLength",
-    );
-  });
 });
 
-describe("assertValidCiphertext", () => {
+describe("ciphertext admission and witnesses", () => {
   const plaintext = utf8ToBytes("bound to this transaction");
   const seed = pattern(16);
   const ciphertext = encryptWithRandom(
@@ -401,7 +346,8 @@ describe("assertValidCiphertext", () => {
       { ...ciphertext, [field]: flipLastByte(ciphertext[field]) },
       7n,
     );
-    assertValidCiphertext(altered, ad);
+    const wire = serializeCiphertext(altered);
+    admitCiphertext(wire, ad);
     expect(
       verifyDecryption({
         ciphertext: altered,
@@ -411,17 +357,36 @@ describe("assertValidCiphertext", () => {
         associatedData: ad,
       }),
     ).toBe(false);
-    expect(key.decrypt(altered, ad)).toBeNull();
+    expect(key.decrypt(wire, ad)).toBeNull();
+  });
+
+  test("rejects a nonzero commitment mismatch after valid admission and unpadding", () => {
+    const maskedPayload = ciphertext.maskedPayload.slice();
+    // Change a message byte, leaving the encrypted length and zero filler intact.
+    maskedPayload[4] ^= 1;
+    const altered = withProof({ ...ciphertext, maskedPayload }, 7n);
+    const wire = serializeCiphertext(altered);
+    admitCiphertext(wire, ad);
+
+    const recoveredPadded = xorBytes(
+      maskedPayload,
+      hashes.prg(hashes.kdf(seed, ad), maskedPayload.length),
+    );
+    const recovered = unpad(recoveredPadded);
+    expect(recovered).not.toBeNull();
+    expect(recovered).not.toEqual(plaintext);
+    const recoveredR = hashes.expandR(hashes.hRho(ad, recoveredPadded, seed));
+    expect(recoveredR).not.toBe(0n);
+    expect(recoveredR).not.toBe(r);
+    expect(key.decrypt(wire, ad)).toBeNull();
   });
 
   test("accepts a zero-nonce proof whose nonzero terms cancel to the identity", () => {
-    const received = deserializeCiphertext(
-      serializeCiphertext(withProof(ciphertext, 0n)),
-    );
+    const wire = serializeCiphertext(withProof(ciphertext, 0n));
+    const received = admitCiphertext(wire, ad);
     expect(decodeScalar(received.proof.subarray(0, 32))).not.toBe(0n);
     expect(decodeScalar(received.proof.subarray(32))).not.toBe(0n);
 
-    expect(assertValidCiphertext(received, ad)).toBeUndefined();
     expect(
       verifyDecryption({
         ciphertext: received,
@@ -431,28 +396,16 @@ describe("assertValidCiphertext", () => {
         associatedData: ad,
       }),
     ).toBe(true);
-    expect(key.decrypt(received, ad)).toEqual({ plaintext, seed });
+    expect(key.decrypt(wire, ad)).toEqual({ plaintext, seed });
   });
 
   test("rejects an invalid proof whose reconstructed nonce commitment is the identity", () => {
     const proof = concatBytes(encodeScalar(1n), encodeScalar(Fr.neg(r)));
 
     expectBtxError(
-      () => assertValidCiphertext({ ...ciphertext, proof }, ad),
+      () => admitCiphertext(serializeCiphertext({ ...ciphertext, proof }), ad),
       "ClientNizkFailed",
     );
-  });
-
-  test.each([
-    0, 15, 17,
-  ])("rejects a %i-byte masked seed even with a matching proof", (length) => {
-    const malformed = withProof(
-      { ...ciphertext, maskedSeed: new Uint8Array(length) },
-      1n,
-    );
-
-    expect(() => assertValidCiphertext(malformed, ad)).toThrow(RangeError);
-    expect(() => key.decrypt(malformed, ad)).toThrow(RangeError);
   });
 
   test.each<[string, Partial<Ciphertext>]>([
@@ -465,7 +418,8 @@ describe("assertValidCiphertext", () => {
     ["proof", { proof: flipLastByte(ciphertext.proof) }],
   ])("rejects a ciphertext whose %s was altered", (_, change) => {
     expectBtxError(
-      () => assertValidCiphertext({ ...ciphertext, ...change }, ad),
+      () =>
+        admitCiphertext(serializeCiphertext({ ...ciphertext, ...change }), ad),
       "ClientNizkFailed",
     );
   });
@@ -474,38 +428,8 @@ describe("assertValidCiphertext", () => {
     const otherAd = utf8ToBytes("another sender or transaction");
 
     expectBtxError(
-      () => assertValidCiphertext(ciphertext, otherAd),
+      () => admitCiphertext(serializeCiphertext(ciphertext), otherAd),
       "ClientNizkFailed",
-    );
-    expectBtxError(() => key.decrypt(ciphertext, otherAd), "ClientNizkFailed");
-  });
-
-  test("rejects a proof scalar that is not below the group order", () => {
-    const proof = ciphertext.proof.slice();
-    proof.set(encodeScalar(Fr.ORDER), 32);
-
-    expectBtxError(
-      () => assertValidCiphertext({ ...ciphertext, proof }, ad),
-      "InvalidScalar",
-    );
-  });
-
-  test("rejects a proof of the wrong length", () => {
-    expectBtxError(
-      () =>
-        assertValidCiphertext({ ...ciphertext, proof: new Uint8Array(63) }, ad),
-      "InvalidScalar",
-    );
-  });
-
-  test.each([47, 48, 96])("rejects a zero commitment of %i bytes", (length) => {
-    expectBtxError(
-      () =>
-        assertValidCiphertext(
-          { ...ciphertext, commitment: new Uint8Array(length) },
-          ad,
-        ),
-      "InvalidPoint",
     );
   });
 });
@@ -524,7 +448,10 @@ describe("decryption guardrails", () => {
     });
 
     expect(
-      createTestKey({ trapdoor: 0xbadn }).decrypt(ciphertext, ad),
+      createTestKey({ trapdoor: 0xbadn }).decrypt(
+        serializeCiphertext(ciphertext),
+        ad,
+      ),
     ).toBeNull();
   });
 
@@ -533,8 +460,7 @@ describe("decryption guardrails", () => {
     padded.set(u32be(9));
     const ciphertext = encryptPadded(padded, ek, ad, fixedRandom(seed, nonce));
 
-    assertValidCiphertext(ciphertext, ad);
-    expect(key.decrypt(ciphertext, ad)).toBeNull();
+    expect(key.decrypt(serializeCiphertext(ciphertext), ad)).toBeNull();
   });
 
   test("returns ⊥ when the filler is not zero", () => {
@@ -542,8 +468,7 @@ describe("decryption guardrails", () => {
     padded[padded.length - 1] = 0xff;
     const ciphertext = encryptPadded(padded, ek, ad, fixedRandom(seed, nonce));
 
-    assertValidCiphertext(ciphertext, ad);
-    expect(key.decrypt(ciphertext, ad)).toBeNull();
+    expect(key.decrypt(serializeCiphertext(ciphertext), ad)).toBeNull();
   });
 
   test("returns ⊥ for a C_2 shorter than the length prefix", () => {
@@ -554,7 +479,7 @@ describe("decryption guardrails", () => {
       fixedRandom(seed, nonce),
     );
 
-    expect(key.decrypt(ciphertext, ad)).toBeNull();
+    expect(key.decrypt(serializeCiphertext(ciphertext), ad)).toBeNull();
   });
 
   test.each([
@@ -586,7 +511,9 @@ describe("decryption guardrails", () => {
       encryptionKey: boundaryKey.encryptionKey,
       associatedData: ad,
     });
-    expect(boundaryKey.decrypt(ciphertext, ad)?.plaintext).toEqual(plaintext);
+    expect(
+      boundaryKey.decrypt(serializeCiphertext(ciphertext), ad)?.plaintext,
+    ).toEqual(plaintext);
   });
 
   test("returns bottom when the recovered witness derives zero", () => {
@@ -597,7 +524,7 @@ describe("decryption guardrails", () => {
     });
     const expand = spyOn(hashes, "expandR").mockReturnValue(0n);
     try {
-      expect(key.decrypt(ciphertext, ad)).toBeNull();
+      expect(key.decrypt(serializeCiphertext(ciphertext), ad)).toBeNull();
     } finally {
       expand.mockRestore();
     }
@@ -612,7 +539,7 @@ describe("verifyDecryption", () => {
     associatedData: ad,
     paddedLength: 32,
   });
-  const decrypted = key.decrypt(ciphertext, ad);
+  const decrypted = key.decrypt(serializeCiphertext(ciphertext), ad);
   if (decrypted === null) throw new Error("decryption failed");
   const { seed } = decrypted;
 
@@ -629,7 +556,6 @@ describe("verifyDecryption", () => {
   });
 
   test("rejects a witness under another valid encryption key", () => {
-    assertValidCiphertext(ciphertext, ad);
     expect(
       verifyDecryption({
         ciphertext,
@@ -680,7 +606,7 @@ describe("verifyDecryption", () => {
       }),
     ).toBe(true);
     expectBtxError(
-      () => assertValidCiphertext(invalid, ad),
+      () => admitCiphertext(serializeCiphertext(invalid), ad),
       "ClientNizkFailed",
     );
   });
@@ -713,24 +639,10 @@ describe("verifyDecryption", () => {
     ).toBe(false);
   });
 
-  test("rejects an oversized candidate before decoding the key", () => {
+  test("returns false for a commitment that does not match the witness", () => {
     expect(
       verifyDecryption({
-        ciphertext,
-        encryptionKey: new Uint8Array(0),
-        plaintext: pattern(33),
-        seed,
-        associatedData: ad,
-      }),
-    ).toBe(false);
-  });
-
-  test.each([
-    47, 48, 96,
-  ])("returns false for a %i-byte commitment that does not match the witness", (length) => {
-    expect(
-      verifyDecryption({
-        ciphertext: { ...ciphertext, commitment: new Uint8Array(length) },
+        ciphertext: { ...ciphertext, commitment: encodeG1(G1.Point.BASE) },
         encryptionKey: key.encryptionKey,
         plaintext,
         seed,

@@ -49,19 +49,18 @@ For transactions, supply the 576-byte epoch encryption key in CatBLST's canonica
 | Call | Result |
 | --- | --- |
 | `encrypt` | A `Ciphertext` object |
-| `admitCiphertext(bytes, associatedData, options?)` | Decodes and verifies received wire bytes once, returning owned ciphertext bytes. Accepts the same size-limit option as `deserializeCiphertext`. |
-| `serializeCiphertext` / `deserializeCiphertext` | Convert between the object and wire bytes. Serialization checks component widths; decoding checks canonical encoding. Neither checks the proof. |
-| `assertValidCiphertext` | Checks the commitment and proof. Returns nothing on success; throws on rejection. |
+| `admitCiphertext(bytes, associatedData, options?)` | Decodes and verifies received wire bytes once, returning a `Ciphertext` with owned bytes. Options can set `maxMaskedPayloadLength`. |
+| `serializeCiphertext` | Encodes an object as wire bytes, checking component widths. Does not check the proof. |
 | `verifyDecryption` | Checks a plaintext and recovered seed against the commitment, masked seed, and masked payload under the encryption key. Returns `true` or `false`. |
-| `key.decrypt(ciphertextOrBytes, associatedData, options?)` | Admits and decrypts, returning `{ plaintext, seed }` or `null` if padding or plaintext checks fail. Pass wire bytes to decode and verify once; the optional size limit applies to wire input. |
+| `key.decrypt(bytes, associatedData, options?)` | Admits and decrypts wire bytes once, returning `{ plaintext, seed }` or `null` if padding or plaintext checks fail. Accepts the same size-limit option as admission. |
 
-Use `admitCiphertext` for received bytes, or `assertValidCiphertext` for an existing object, before `verifyDecryption({ ciphertext, encryptionKey, plaintext, seed, associatedData })`: the latter does not check the proof. Supply the same authenticated epoch key used for encryption. An invalid key throws; a valid but wrong key returns `false`.
+Pass the unchanged result of `admitCiphertext` to `verifyDecryption({ ciphertext, encryptionKey, plaintext, seed, associatedData })`: the latter does not check the proof. Supply the same authenticated epoch key used for encryption. An invalid key throws; a valid but wrong key returns `false`.
 
-Admitted ciphertexts own their bytes but remain mutable. Admission proves validity at that call, not after later edits. The test decryptor always validates its input; pass it wire bytes directly rather than decoding or admitting them first. Encryption, decryption, and witness verification leave caller inputs unchanged.
+Admitted ciphertexts own their bytes but remain mutable. Admission proves validity at that call, not after later edits. The test decryptor accepts wire bytes directly; use `serializeCiphertext` for objects returned by encryption. Encryption, decryption, and witness verification leave caller inputs unchanged.
 
 Protocol rejections throw `BtxError`; use its `code` to distinguish them. Invalid types or byte lengths can throw `TypeError` or `RangeError`, including in `verifyDecryption`.
 
-Size checks run before curve work. `verifyDecryption` returns `false` for a candidate that cannot fit in the ciphertext, before decoding its key. Test keys require a positive u32 `maxBatchSize` and a trapdoor in `[1, q)`; invalid values throw `RangeError`.
+Wire size limits run before payload copying and curve work. Test keys require a positive u32 `maxBatchSize` and a trapdoor in `[1, q)`; invalid values throw `RangeError`.
 
 Encryption always uses secure platform randomness. Fixtures supply deterministic randomness through an internal helper, outside the package API.
 

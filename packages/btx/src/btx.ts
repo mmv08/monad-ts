@@ -11,7 +11,6 @@ import {
 import {
   type Ciphertext,
   type DeserializeOptions,
-  decodeCiphertext,
   decodeCiphertextBytes,
   LENGTH_PREFIX_SIZE,
   MASKED_SEED_SIZE,
@@ -43,7 +42,7 @@ type EncryptParameters = {
 
 /** Named inputs for {@link verifyDecryption}. */
 type VerifyDecryptionParameters = {
-  /** Ciphertext already admitted by {@link assertValidCiphertext}. */
+  /** Ciphertext returned by {@link admitCiphertext}, unchanged since admission. */
   readonly ciphertext: Ciphertext;
   /** Canonical 576-byte, non-identity G_T key used for encryption. The caller must authenticate its source and epoch. */
   readonly encryptionKey: Uint8Array;
@@ -140,7 +139,7 @@ function prove(
 
 /** verify: recomputes T' = g_1·s + R·c and checks that it reproduces the challenge. */
 function verifyProof(
-  { commitment, ciphertext, c, s }: ReturnType<typeof decodeCiphertext>,
+  { commitment, ciphertext, c, s }: ReturnType<typeof decodeCiphertextBytes>,
   associatedData: Uint8Array,
 ): boolean {
   const nonceCommitment = G1.Point.BASE.multiplyUnsafe(s).add(
@@ -209,15 +208,12 @@ function encryptWithRandom(
 
 /** Decodes and admits once; decoded values stay local to the current operation. */
 function validateCiphertext(
-  input: Ciphertext | Uint8Array,
+  bytes: Uint8Array,
   associatedData: Uint8Array,
   options: DeserializeOptions = {},
 ) {
   abytes(associatedData);
-  const decoded =
-    input instanceof Uint8Array
-      ? decodeCiphertextBytes(input, options)
-      : decodeCiphertext(input);
+  const decoded = decodeCiphertextBytes(bytes, options);
   if (decoded.commitment.is0()) {
     throw new BtxError("InvalidCiphertext", "R is the identity");
   }
@@ -231,7 +227,7 @@ function validateCiphertext(
  * Decodes and admits received wire bytes in one operation, enforcing the size limit before
  * copying payload bytes or doing curve work. Returns owned ciphertext bytes.
  *
- * The returned arrays remain mutable; later operations validate them again.
+ * The returned arrays remain mutable; do not edit them before witness verification.
  * @throws {BtxError} If the encoding, size limit, commitment, or proof is rejected.
  * @throws {TypeError} If bytes or associated data is not a Uint8Array.
  */
@@ -240,29 +236,12 @@ function admitCiphertext(
   associatedData: Uint8Array,
   options: DeserializeOptions = {},
 ): Ciphertext {
-  abytes(bytes);
   return validateCiphertext(bytes, associatedData, options).ciphertext;
 }
 
 /**
- * Admits a ciphertext by checking its commitment and client proof against associated data
- * (the specification's verify_ciphertext). Use admitCiphertext for received wire bytes.
- *
- * @returns Nothing on success; does not decrypt or check a plaintext witness.
- * @throws {BtxError} If the commitment or proof is rejected.
- * @throws {TypeError} If associated data or the masked seed is not a Uint8Array.
- * @throws {RangeError} If the masked seed is not 16 bytes.
- */
-function assertValidCiphertext(
-  ciphertext: Ciphertext,
-  associatedData: Uint8Array,
-): void {
-  validateCiphertext(ciphertext, associatedData);
-}
-
-/**
  * Checks that the plaintext and seed reproduce the commitment, masked seed, and masked payload
- * under the encryption key. Does not check the proof; call {@link assertValidCiphertext} first.
+ * under the encryption key. Does not check the proof; use an unchanged result of {@link admitCiphertext}.
  *
  * @returns True for a matching witness, false for a mismatch.
  * @throws {BtxError} If the encryption key is invalid.
@@ -306,7 +285,6 @@ function verifyDecryption({
 
 export {
   admitCiphertext,
-  assertValidCiphertext,
   encrypt,
   encryptPadded,
   encryptWithRandom,

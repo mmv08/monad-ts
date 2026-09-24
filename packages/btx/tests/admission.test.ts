@@ -2,7 +2,6 @@ import { describe, expect, spyOn, test } from "bun:test";
 import { G1 } from "../src/curve.js";
 import {
   admitCiphertext,
-  assertValidCiphertext,
   encrypt,
   serializeCiphertext,
   verifyDecryption,
@@ -38,14 +37,10 @@ describe("wire admission", () => {
     const admitted = admitCiphertext(input, ad);
     input.fill(0);
     expect(admitted).toEqual(ciphertext);
-    expect(key.decrypt(admitted, ad)?.plaintext).toEqual(plaintext);
-
     admitted.maskedPayload[0] ^= 1;
-    expectBtxError(
-      () => assertValidCiphertext(admitted, ad),
-      "ClientNizkFailed",
-    );
-    expectBtxError(() => key.decrypt(admitted, ad), "ClientNizkFailed");
+    const altered = serializeCiphertext(admitted);
+    expectBtxError(() => admitCiphertext(altered, ad), "ClientNizkFailed");
+    expectBtxError(() => key.decrypt(altered, ad), "ClientNizkFailed");
     expect(admitCiphertext(wire, ad)).toEqual(ciphertext);
   });
 
@@ -85,25 +80,29 @@ describe("wire admission", () => {
       encryptionKey: key.encryptionKey,
     });
     const before = serializeCiphertext(encrypted);
-    const result = key.decrypt(encrypted, ad);
+    const input = before.slice();
+    const result = key.decrypt(input, ad);
     expect(result).not.toBeNull();
     if (!result) throw new Error("decryption failed");
     const seed = result.seed.slice();
+    const admitted = admitCiphertext(input, ad);
     expect(
       verifyDecryption({
-        ciphertext: encrypted,
+        ciphertext: admitted,
         plaintext,
         seed: result.seed,
         associatedData: ad,
         encryptionKey: key.encryptionKey,
       }),
     ).toBe(true);
+    expect(before).toEqual(input);
+    expect(serializeCiphertext(admitted)).toEqual(before);
     expect(serializeCiphertext(encrypted)).toEqual(before);
     expect(plaintext).toEqual(originalPlaintext);
     expect(ad).toEqual(originalAd);
     expect(key.encryptionKey).toEqual(originalKey);
     expect(result.seed).toEqual(seed);
     result.plaintext.fill(0);
-    expect(key.decrypt(encrypted, ad)?.plaintext).toEqual(plaintext);
+    expect(key.decrypt(before, ad)?.plaintext).toEqual(plaintext);
   });
 });

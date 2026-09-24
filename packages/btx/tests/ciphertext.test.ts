@@ -1,11 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { Buffer } from "node:buffer";
 import { bls12_381 } from "@noble/curves/bls12-381.js";
 import { numberToBytesBE, u32be } from "../src/bytes.js";
+import { deserializeCiphertext } from "../src/ciphertext.js";
 import {
-  assertValidCiphertext,
+  admitCiphertext,
   CIPHERTEXT_OVERHEAD,
-  deserializeCiphertext,
   encrypt,
   serializeCiphertext,
 } from "../src/index.js";
@@ -65,18 +64,6 @@ describe("serialization", () => {
     expect(serializeCiphertext(deserializeCiphertext(bytes))).toEqual(bytes);
   });
 
-  test.each([
-    ["Uint8Array", bytes.slice()],
-    ["Buffer", Buffer.from(bytes)],
-  ] as const)("returns copies that later mutation of the %s input cannot change", (_, input) => {
-    const decoded = deserializeCiphertext(input);
-    assertValidCiphertext(decoded, ad);
-    input.fill(0);
-
-    expect(decoded).toEqual(ciphertext);
-    assertValidCiphertext(decoded, ad);
-  });
-
   test("rejects non-byte input", () => {
     expect(() => deserializeCiphertext("00" as unknown as Uint8Array)).toThrow(
       TypeError,
@@ -85,16 +72,6 @@ describe("serialization", () => {
 });
 
 describe("deserialization rejects", () => {
-  test("checks wire lengths and the size limit before the point", () => {
-    const malformed = withCommitment(OFF_CURVE);
-    expectBtxError(
-      () => deserializeCiphertext(malformed, { maxMaskedPayloadLength: 43 }),
-      "InvalidLength",
-    );
-    malformed.set(u32be(45), 64);
-    expectBtxError(() => deserializeCiphertext(malformed), "InvalidLength");
-  });
-
   test("a non-canonical x that reduces to a valid subgroup point", () => {
     const point = bls12_381.G1.Point.BASE.multiply(2n);
     const canonical = point.toBytes();
@@ -181,12 +158,12 @@ describe("deserialization rejects", () => {
 });
 
 describe("the identity as R", () => {
-  test("decodes, and is rejected by assertValidCiphertext", () => {
+  test("decodes, but admission rejects it", () => {
     const decoded = deserializeCiphertext(withCommitment(IDENTITY));
 
     expect(decoded.commitment).toEqual(hexToBytes(IDENTITY));
     expectBtxError(
-      () => assertValidCiphertext(decoded, ad),
+      () => admitCiphertext(withCommitment(IDENTITY), ad),
       "InvalidCiphertext",
     );
   });

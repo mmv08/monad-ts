@@ -8,7 +8,7 @@
 
 import { unpad, validateCiphertext } from "./btx.js";
 import { xorBytes, xorInto } from "./bytes.js";
-import type { Ciphertext, DeserializeOptions } from "./ciphertext.js";
+import type { DeserializeOptions } from "./ciphertext.js";
 import { encodeGt, Fr, G1, G2, pairing, randomScalar } from "./curve.js";
 import { expandR, hKem, hRho, kdf, prg } from "./hash.js";
 
@@ -35,16 +35,15 @@ type TestKey = {
   /** B_max the key was generated for. */
   readonly maxBatchSize: number;
   /**
-   * Admits and decrypts one ciphertext. Pass wire bytes to decode and verify once.
-   * Options apply to wire bytes, before payload copying and curve work.
+   * Admits and decrypts one wire ciphertext, decoding and verifying once.
+   * Size limits apply before payload copying and curve work.
    *
    * @returns Plaintext and seed, or null if padding is malformed or the guardrail fails.
    * @throws {BtxError} If admission rejects the commitment or proof.
-   * @throws {TypeError} If associated data or the masked seed is not a Uint8Array.
-   * @throws {RangeError} If the masked seed is not 16 bytes.
+   * @throws {TypeError} If bytes or associated data is not a Uint8Array.
    */
   decrypt(
-    ciphertext: Ciphertext | Uint8Array,
+    bytes: Uint8Array,
     associatedData: Uint8Array,
     options?: DeserializeOptions,
   ): Decryption | null;

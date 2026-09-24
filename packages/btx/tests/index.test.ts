@@ -8,8 +8,6 @@ describe("entry points", () => {
       "BtxError",
       "CIPHERTEXT_OVERHEAD",
       "admitCiphertext",
-      "assertValidCiphertext",
-      "deserializeCiphertext",
       "encrypt",
       "paddedLengthFor",
       "serializeCiphertext",

@@ -1,6 +1,5 @@
 export {
   admitCiphertext,
-  assertValidCiphertext,
   encrypt,
   paddedLengthFor,
   verifyDecryption,
@@ -8,7 +7,6 @@ export {
 export type { Ciphertext } from "./ciphertext.js";
 export {
   CIPHERTEXT_OVERHEAD,
-  deserializeCiphertext,
   serializeCiphertext,
 } from "./ciphertext.js";
 export { BtxError } from "./error.js";

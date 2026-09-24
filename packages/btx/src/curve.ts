@@ -29,16 +29,13 @@ const FP2_SIZE = 96;
 const SCALAR_ENTROPY_SIZE = getMinHashLength(Fr.ORDER);
 
 /**
- * Decodes a compressed G_1 point. Rejects non-canonical encodings, points off the curve, and
- * points outside the prime-order subgroup. The identity decodes; `assertValidCiphertext` rejects it.
+ * Decodes a 48-byte compressed G_1 slice from the wire decoder. Rejects non-canonical encodings,
+ * points off the curve, and points outside the prime-order subgroup. Admission rejects the identity.
  *
  * Canonicality rests on the noble decoder: limbs are range-checked, the identity has one
  * encoding, and the compressed flag must be set. The dependency pin fixes that behaviour.
  */
 function decodeG1(bytes: Uint8Array): G1Point {
-  if (bytes.length !== G1_SIZE) {
-    throw new BtxError("InvalidPoint", `expected ${G1_SIZE} bytes`);
-  }
   try {
     return G1.Point.fromBytes(bytes);
   } catch {
@@ -55,11 +52,8 @@ function encodeG1(point: G1Point): Uint8Array {
   return (point.is0() ? G1.Point.ZERO : point).toBytes(true);
 }
 
-/** Decodes a 32-byte big-endian scalar strictly below the group order. */
+/** Decodes a 32-byte slice from the wire proof, rejecting scalars at or above the group order. */
 function decodeScalar(bytes: Uint8Array): bigint {
-  if (bytes.length !== SCALAR_SIZE) {
-    throw new BtxError("InvalidScalar", `expected ${SCALAR_SIZE} bytes`);
-  }
   const scalar = bytesToNumberBE(bytes);
   if (scalar >= Fr.ORDER) {
     throw new BtxError("InvalidScalar", "not below the group order");
