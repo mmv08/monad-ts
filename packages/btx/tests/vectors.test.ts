@@ -8,11 +8,7 @@ import {
   Gt,
 } from "../src/curve.js";
 import { expandR, hRho } from "../src/hash.js";
-import {
-  assertValidCiphertext,
-  deserializeCiphertext,
-  serializeCiphertext,
-} from "../src/index.js";
+import { admitCiphertext, serializeCiphertext } from "../src/index.js";
 import { createTestKey } from "../src/testing.js";
 import type { Vector } from "./fixtures/vectors.js";
 import { bytesToHex, fixedRandom, hexToBytes } from "./utils.js";
@@ -59,9 +55,11 @@ describe("fixture vectors", () => {
     );
     expect(bytesToHex(serializeCiphertext(ciphertext))).toBe(vector.ciphertext);
 
-    const received = deserializeCiphertext(hexToBytes(vector.ciphertext));
-    assertValidCiphertext(received, associatedData);
-    const decrypted = key.decrypt(received, associatedData);
+    const wire = hexToBytes(vector.ciphertext);
+    expect(serializeCiphertext(admitCiphertext(wire, associatedData))).toEqual(
+      wire,
+    );
+    const decrypted = key.decrypt(wire, associatedData);
     expect(decrypted && bytesToHex(decrypted.plaintext)).toBe(vector.plaintext);
     expect(decrypted && bytesToHex(decrypted.seed)).toBe(vector.seed);
   });

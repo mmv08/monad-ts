@@ -10,6 +10,7 @@ The package implements the sender-facing part of BTX, the batched threshold encr
 - The Schnorr proof of knowledge of the encryption randomness, bound to the ciphertext and the associated data.
 - `serialize_ciphertext` and `deserialize_ciphertext`.
 - `assertValidCiphertext` (the PDF's `verify_ciphertext`), the admission gate.
+- `admitCiphertext`, which decodes and admits received bytes in one call.
 - `verifyDecryption` (the PDF's `verify_decryption`), the guardrail a decryptor and a witness holder run.
 
 A test-only entry adds key generation from a trapdoor and single-ciphertext decryption. Shares, `combine`, precomputes, `batch_decrypt`, fault attribution, public-parameter and secret-share encodings, transactions, associated-data construction, and RPC are outside this package.
@@ -49,13 +50,15 @@ Changing any row changes ciphertext bytes and requires new fixtures and a review
 4. `C_1 = S ⊕ H_kem(pad, R, AD)`; `C_2 = P ⊕ PRG(KDF(S, AD), |P|)`.
 5. Draw the nonce `k`; `π = prove(R, C_1, C_2, AD, r, k)` with `T = g_1·k`, `c = challenge(R, T, C_1, C_2, AD)`, `s = k − c·r`.
 
-`assertValidCiphertext` (p. 52) checks that C_1 is 16 bytes, decodes R to enforce subgroup membership, rejects identity R, then recomputes `T' = g_1·s + R·c` and the challenge. It returns nothing on success and throws on rejection. The internal `validateCiphertext` helper returns the admitted point so test decryption can reuse it.
+`assertValidCiphertext` (p. 52) checks that C_1 is 16 bytes, decodes R and the proof scalars, rejects identity R, then recomputes `T' = g_1·s + R·c` and the challenge. It returns nothing on success and throws on rejection. `admitCiphertext(bytes, AD, options)` combines wire decoding and admission, returning owned ciphertext bytes. The internal `validateCiphertext` helper returns the ciphertext and its decoded values for test decryption to reuse within that call.
 
 `verifyDecryption` rebuilds `P` from the candidate plaintext and `|C_2|`, recomputes nonzero `r`, and checks `R`, `C_1`, and `C_2`. It takes the authenticated encryption key and independently computes `ek^r` to require `C_1 = S XOR H_kem(ek^r, R, AD)`, matching current Rust. This strengthens the PDF's R/C_2-only check (p. 60): a sender who knows `r` can make a valid proof over an inconsistent `C_1`. It compares canonical commitment bytes rather than decoding R again. Mismatches return `false`; invalid keys, types, or seed lengths can throw. It does not check the proof, so callers must run `assertValidCiphertext` first.
 
 The hash primitives in `src/hash.ts` match Appendix E and the challenge on p. 64 exactly: `S`, `R`, `T`, `C_1`, and the encoded pad are absorbed bare; `AD`, `P`, and `C_2` are length-prefixed; the Blake3 context is a derive_key context, not absorbed input.
 
 `encrypt` and `verifyDecryption` take named parameter objects. `encrypt` calls the internal `encryptWithRandom` helper with the platform CSPRNG. That helper checks inputs, pads the plaintext, and calls `encryptPadded`, which derives `r` once per seed attempt and retains it for masking and proof generation. Tests use these internal helpers for fixed randomness and malformed padding; neither helper is exported by a package entry.
+
+`encryptPadded` consumes its owned padded buffer, applying the stream XOR in place. Witness verification also XORs into its rebuilt padded buffer. Test decryption XORs the ciphertext into the newly allocated stream buffer. Each avoids a separate payload-sized XOR result. The hash helpers remain explicit and caller-owned inputs remain unchanged; there is no streaming or buffer-pool layer.
 
 ## 4. Encoding and Canonicality
 
@@ -64,7 +67,7 @@ The ciphertext has exactly one serialization, because associated data may later 
 - `serializeCiphertext` checks component types and fixed widths, but leaves point/scalar canonicality and proof checks to decoding and admission.
 - `deserializeCiphertext` checks the total length and caller's size limit before decoding R or copying components. It rejects trailing data, a length prefix that disagrees with the buffer, a masked payload above the caller's `maxMaskedPayloadLength`, and non-canonical scalars. An explicit limit must be a nonnegative safe integer; omit it for no limit. The limit includes the inner four-byte plaintext-length prefix but excludes the 132-byte `CIPHERTEXT_OVERHEAD`. This changes error precedence for inputs with both length and point faults.
 - Decoded components own their bytes, including for Node `Buffer` inputs; later input changes cannot alter the ciphertext.
-- G_1 decoding relies on the pinned noble decoder: the x limb is range-checked, the identity has one encoding, and the compressed flag must be set. Subgroup membership is checked at decode as well as in `assertValidCiphertext`. Admission cannot trust an earlier decode because callers can construct ciphertext objects or mutate their arrays. This preserves acceptance and rejection but may change the rejection stage and error precedence for inputs with several faults.
+- G_1 decoding relies on the pinned noble decoder: the x limb is range-checked, the identity has one encoding, and the compressed flag must be set. `admitCiphertext` and wire-input test decryption decode each point and scalar once. Decoded values stay local to that synchronous call; there is no validation cache or persistent verified flag. Calling `deserializeCiphertext` and then `assertValidCiphertext` still repeats decoding: returned arrays are mutable, so admission cannot trust an earlier check. Subgroup checks happen during decoding, earlier than the PDF's split API; malformed inputs with several faults may have different error precedence.
 - G_1 encoding normalizes computed identity points to Noble's canonical `Point.ZERO`. Nonzero terms in the proof check can cancel to a non-normalized projective identity, which Noble 2.3.0 otherwise refuses to encode. Identity T is valid; identity R remains forbidden.
 - Encryption-key decoding converts CatBLST wire order to Noble tower order, uses `Fp12.fromBytes` to range-check every limb, then enforces target-group membership and rejects the identity. Encoding applies the inverse conversion. In 48-byte limb indices, CatBLST bytes select `[0, 1, 6, 7, 2, 3, 8, 9, 4, 5, 10, 11]` from Noble's output. The same codec encodes the KEM pad. Field decoding alone does not establish G_T membership.
 - Scalars are 32 big-endian bytes strictly below q.
@@ -98,7 +101,7 @@ The fixture helper supplies entropy that yields each stored seed and nonce throu
 
 `src/testing.ts` is a separate entry, `@monad-crypto/btx/testing`, and the main entry never imports it. It validates B_max as a positive u32 and τ as a nonzero canonical scalar, then computes `h = g_2·τ^(B_max+1)`, the reference-string slot the DKG withholds. Thus `e(g_1, h) = ek` and `e(R, h) = ek·r` is the pad the threshold path reconstructs. One process holds τ, so this offers no threshold, no share release, and no privacy. It exists so tests and the local mock can decrypt real ciphertexts without a DKG.
 
-Decryption uses the shorter checks in Rust's `final_recovery.rs`: admit the ciphertext, recover `S`, unmask `P`, check its canonical padding, derive nonzero `r`, and require `R = g_1·r`. It returns only the unpadded plaintext and seed. Re-encrypting P would repeat the XOR that recovered it. Once R matches, the pairing pad equals `ek^r`, so a second C_1 check is also redundant. The standalone `verifyDecryption` still checks R, C_1, and C_2 because it receives a candidate plaintext and seed rather than recovering them from a trusted pad.
+Decryption accepts a ciphertext object or wire bytes. For wire bytes it checks the optional size limit, copies and decodes the components, then verifies the proof once. It reuses the decoded commitment for pairing and the guardrail. It uses the shorter checks in Rust's `final_recovery.rs`: admit the ciphertext, recover `S`, unmask `P`, check its canonical padding, derive nonzero `r`, and require `R = g_1·r`. It returns only the unpadded plaintext and seed. Re-encrypting P would repeat the XOR that recovered it. Once R matches, the pairing pad equals `ek^r`, so a second C_1 check is also redundant. The standalone `verifyDecryption` still checks R, C_1, and C_2 because it receives a candidate plaintext and seed rather than recovering them from a trusted pad.
 
 ## 8. Dependencies
 

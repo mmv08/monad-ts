@@ -88,7 +88,7 @@ Tests run against Monad mainnet RPC (`https://rpc.monad.xyz`) using `bun:test`. 
 - `packages/btx/src/curve.ts` wraps `@noble/curves` BLS12-381: canonical G_1, scalar, and G_T codecs.
 - `packages/btx/src/hash.ts` implements the Blake3 primitives of the specification's Appendix E and the proof challenge.
 - `packages/btx/src/ciphertext.ts` defines the `Ciphertext` type and its one canonical wire form.
-- `packages/btx/src/btx.ts` implements padding, the Schnorr proof, `encrypt`, `assertValidCiphertext`, and `verifyDecryption`. Encryption and witness verification take named parameter objects.
+- `packages/btx/src/btx.ts` implements padding, the Schnorr proof, `encrypt`, `admitCiphertext`, `assertValidCiphertext`, and `verifyDecryption`. Encryption and witness verification take named parameter objects. `admitCiphertext` combines wire decoding and proof verification; test decryption also accepts wire bytes to avoid repeated checks. Decoded values stay local to each call because public ciphertext arrays remain mutable.
 - `packages/btx/src/index.ts` is the complete public surface; `packages/btx/src/testing.ts` is the separate `@monad-crypto/btx/testing` entry with trapdoor-based test keys.
 - Public `encrypt` always uses the platform CSPRNG. Only fixtures and tests call the internal `encryptWithRandom` or `encryptPadded` helpers with injected randomness.
 - `packages/btx/tests/` holds pure `bun:test` suites and the fixture vectors with their generator.

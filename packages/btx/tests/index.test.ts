@@ -7,6 +7,7 @@ describe("entry points", () => {
     expect(Object.keys(publicApi).sort()).toEqual([
       "BtxError",
       "CIPHERTEXT_OVERHEAD",
+      "admitCiphertext",
       "assertValidCiphertext",
       "deserializeCiphertext",
       "encrypt",

@@ -23,7 +23,6 @@ This uses a test key, not validator shares. Anyone with the test key can decrypt
 
 ```ts
 import {
-  deserializeCiphertext,
   encrypt,
   serializeCiphertext,
 } from "@monad-crypto/btx";
@@ -38,8 +37,7 @@ const ciphertext = encrypt({
   encryptionKey: key.encryptionKey,
   associatedData,
 });
-const received = deserializeCiphertext(serializeCiphertext(ciphertext));
-const result = key.decrypt(received, associatedData);
+const result = key.decrypt(serializeCiphertext(ciphertext), associatedData);
 if (result === null) throw new Error("Decryption failed");
 console.log(new TextDecoder().decode(result.plaintext)); // hello
 ```
@@ -51,12 +49,15 @@ For transactions, supply the 576-byte epoch encryption key in CatBLST's canonica
 | Call | Result |
 | --- | --- |
 | `encrypt` | A `Ciphertext` object |
+| `admitCiphertext(bytes, associatedData, options?)` | Decodes and verifies received wire bytes once, returning owned ciphertext bytes. Accepts the same size-limit option as `deserializeCiphertext`. |
 | `serializeCiphertext` / `deserializeCiphertext` | Convert between the object and wire bytes. Serialization checks component widths; decoding checks canonical encoding. Neither checks the proof. |
 | `assertValidCiphertext` | Checks the commitment and proof. Returns nothing on success; throws on rejection. |
 | `verifyDecryption` | Checks a plaintext and recovered seed against the commitment, masked seed, and masked payload under the encryption key. Returns `true` or `false`. |
-| `key.decrypt` | Checks the ciphertext, then returns `{ plaintext, seed }`, or `null` if padding or plaintext checks fail. Throws if the commitment or proof fails. |
+| `key.decrypt(ciphertextOrBytes, associatedData, options?)` | Admits and decrypts, returning `{ plaintext, seed }` or `null` if padding or plaintext checks fail. Pass wire bytes to decode and verify once; the optional size limit applies to wire input. |
 
-Run `assertValidCiphertext(ciphertext, associatedData)` before `verifyDecryption({ ciphertext, encryptionKey, plaintext, seed, associatedData })`: the latter does not check the proof. Supply the same authenticated epoch key used for encryption. An invalid key throws; a valid but wrong key returns `false`.
+Use `admitCiphertext` for received bytes, or `assertValidCiphertext` for an existing object, before `verifyDecryption({ ciphertext, encryptionKey, plaintext, seed, associatedData })`: the latter does not check the proof. Supply the same authenticated epoch key used for encryption. An invalid key throws; a valid but wrong key returns `false`.
+
+Admitted ciphertexts own their bytes but remain mutable. Admission proves validity at that call, not after later edits. The test decryptor always validates its input; pass it wire bytes directly rather than decoding or admitting them first. Encryption, decryption, and witness verification leave caller inputs unchanged.
 
 Protocol rejections throw `BtxError`; use its `code` to distinguish them. Invalid types or byte lengths can throw `TypeError` or `RangeError`, including in `verifyDecryption`.
 

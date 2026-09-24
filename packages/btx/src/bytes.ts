@@ -30,10 +30,14 @@ function readU32be(bytes: Uint8Array, offset: number): number {
 
 /** XORs two equal-length byte arrays into a new array. */
 function xorBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+  return xorInto(Uint8Array.from(a), b);
+}
+
+/** XORs into an owned buffer and returns it. The mask must not overlap the buffer. */
+function xorInto(a: Uint8Array, b: Uint8Array): Uint8Array {
   abytes(b, a.length);
-  const out = new Uint8Array(a.length);
-  for (let i = 0; i < a.length; i++) out[i] = a[i] ^ b[i];
-  return out;
+  for (let i = 0; i < a.length; i++) a[i] ^= b[i];
+  return a;
 }
 
 export {
@@ -50,4 +54,5 @@ export {
   u64be,
   utf8ToBytes,
   xorBytes,
+  xorInto,
 };

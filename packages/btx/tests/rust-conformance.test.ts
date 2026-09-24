@@ -17,9 +17,8 @@ import {
 } from "../src/curve.js";
 import { challenge, expandR, hKem, hRho, kdf, prg } from "../src/hash.js";
 import {
-  assertValidCiphertext,
+  admitCiphertext,
   BtxError,
-  deserializeCiphertext,
   serializeCiphertext,
 } from "../src/index.js";
 import admission from "./fixtures/rust-admission.json" with { type: "json" };
@@ -111,8 +110,7 @@ describe("Rust admission vectors", () => {
     const ad = hexToBytes(vector.ad ?? admission.ad);
     let result = "ok";
     try {
-      const ciphertext = deserializeCiphertext(wire);
-      assertValidCiphertext(ciphertext, ad);
+      const ciphertext = admitCiphertext(wire, ad);
       expect(serializeCiphertext(ciphertext)).toEqual(wire);
     } catch (error) {
       if (!(error instanceof BtxError)) throw error;

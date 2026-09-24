@@ -118,9 +118,7 @@ describe("encrypt and decrypt", () => {
     });
 
     expect(ciphertext.maskedPayload).toHaveLength(4 + paddedLengthFor(length));
-    const received = deserializeCiphertext(serializeCiphertext(ciphertext));
-    assertValidCiphertext(received, ad);
-    const decrypted = key.decrypt(received, ad);
+    const decrypted = key.decrypt(serializeCiphertext(ciphertext), ad);
 
     expect(decrypted?.plaintext).toEqual(plaintext);
     expect(decrypted?.seed).toHaveLength(16);

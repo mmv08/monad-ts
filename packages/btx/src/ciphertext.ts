@@ -25,6 +25,18 @@ type DeserializeOptions = {
   readonly maxMaskedPayloadLength?: number;
 };
 
+/** Internal decoded values, reused only within one synchronous operation. */
+function decodeCiphertext(ciphertext: Ciphertext) {
+  abytes(ciphertext.maskedSeed, MASKED_SEED_SIZE);
+  abytes(ciphertext.maskedPayload);
+  return {
+    ciphertext,
+    commitment: decodeG1(ciphertext.commitment),
+    c: decodeScalar(ciphertext.proof.subarray(0, SCALAR_SIZE)),
+    s: decodeScalar(ciphertext.proof.subarray(SCALAR_SIZE)),
+  };
+}
+
 /** Byte length of C_1. */
 const MASKED_SEED_SIZE = 16;
 /** Byte length of the C_2 length prefix. */
@@ -69,6 +81,14 @@ function deserializeCiphertext(
   bytes: Uint8Array,
   options: DeserializeOptions = {},
 ): Ciphertext {
+  return decodeCiphertextBytes(bytes, options).ciphertext;
+}
+
+/** Owns the wire components and decodes each point and scalar once. */
+function decodeCiphertextBytes(
+  bytes: Uint8Array,
+  options: DeserializeOptions = {},
+) {
   abytes(bytes);
   const maxMaskedPayloadLength = options.maxMaskedPayloadLength;
   if (
@@ -101,7 +121,6 @@ function deserializeCiphertext(
     throw new BtxError("InvalidLength", "C_2 exceeds the size limit");
   }
   const commitment = Uint8Array.from(bytes.subarray(0, G1_SIZE));
-  decodeG1(commitment);
   const maskedSeed = Uint8Array.from(
     bytes.subarray(G1_SIZE, G1_SIZE + MASKED_SEED_SIZE),
   );
@@ -110,14 +129,14 @@ function deserializeCiphertext(
     bytes.subarray(payloadStart, payloadStart + payloadLength),
   );
   const proof = Uint8Array.from(bytes.subarray(payloadStart + payloadLength));
-  decodeScalar(proof.subarray(0, SCALAR_SIZE));
-  decodeScalar(proof.subarray(SCALAR_SIZE));
-  return { commitment, maskedSeed, maskedPayload, proof };
+  return decodeCiphertext({ commitment, maskedSeed, maskedPayload, proof });
 }
 
-export type { Ciphertext };
+export type { Ciphertext, DeserializeOptions };
 export {
   CIPHERTEXT_OVERHEAD,
+  decodeCiphertext,
+  decodeCiphertextBytes,
   deserializeCiphertext,
   LENGTH_PREFIX_SIZE,
   MASKED_SEED_SIZE,

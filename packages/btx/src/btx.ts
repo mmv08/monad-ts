@@ -6,25 +6,25 @@ import {
   readU32be,
   u32be,
   xorBytes,
+  xorInto,
 } from "./bytes.js";
 import {
   type Ciphertext,
+  type DeserializeOptions,
+  decodeCiphertext,
+  decodeCiphertextBytes,
   LENGTH_PREFIX_SIZE,
   MASKED_SEED_SIZE,
 } from "./ciphertext.js";
 import {
   decodeEncryptionKey,
-  decodeG1,
-  decodeScalar,
   encodeG1,
   encodeScalar,
   type Fp12,
   Fr,
   G1,
-  type G1Point,
   Gt,
   randomScalar,
-  SCALAR_SIZE,
 } from "./curve.js";
 import { BtxError } from "./error.js";
 import { challenge, expandR, hKem, hRho, kdf, prg } from "./hash.js";
@@ -140,12 +140,9 @@ function prove(
 
 /** verify: recomputes T' = g_1·s + R·c and checks that it reproduces the challenge. */
 function verifyProof(
-  commitment: G1Point,
-  ciphertext: Ciphertext,
+  { commitment, ciphertext, c, s }: ReturnType<typeof decodeCiphertext>,
   associatedData: Uint8Array,
 ): boolean {
-  const c = decodeScalar(ciphertext.proof.subarray(0, SCALAR_SIZE));
-  const s = decodeScalar(ciphertext.proof.subarray(SCALAR_SIZE));
   const nonceCommitment = G1.Point.BASE.multiplyUnsafe(s).add(
     commitment.multiplyUnsafe(c),
   );
@@ -159,7 +156,7 @@ function verifyProof(
   return expected === c;
 }
 
-/** Encrypts padded bytes; tests can also supply malformed padding to exercise decryption. */
+/** Consumes an owned padded buffer; tests may supply malformed padding to exercise decryption. */
 function encryptPadded(
   paddedPlaintext: Uint8Array,
   encryptionKey: Fp12,
@@ -175,7 +172,7 @@ function encryptPadded(
   const commitment = encodeG1(G1.Point.BASE.multiply(r));
   const pad = Gt.pow(encryptionKey, r);
   const maskedSeed = xorBytes(seed, hKem(pad, commitment, associatedData));
-  const maskedPayload = xorBytes(
+  const maskedPayload = xorInto(
     paddedPlaintext,
     prg(kdf(seed, associatedData), paddedPlaintext.length),
   );
@@ -210,26 +207,46 @@ function encryptWithRandom(
   return encryptPadded(padded, ek, associatedData, random);
 }
 
-/** Runs admission and returns the decoded commitment for test decryption to reuse. */
+/** Decodes and admits once; decoded values stay local to the current operation. */
 function validateCiphertext(
-  ciphertext: Ciphertext,
+  input: Ciphertext | Uint8Array,
   associatedData: Uint8Array,
-): G1Point {
+  options: DeserializeOptions = {},
+) {
   abytes(associatedData);
-  abytes(ciphertext.maskedSeed, MASKED_SEED_SIZE);
-  const commitment = decodeG1(ciphertext.commitment);
-  if (commitment.is0()) {
+  const decoded =
+    input instanceof Uint8Array
+      ? decodeCiphertextBytes(input, options)
+      : decodeCiphertext(input);
+  if (decoded.commitment.is0()) {
     throw new BtxError("InvalidCiphertext", "R is the identity");
   }
-  if (!verifyProof(commitment, ciphertext, associatedData)) {
+  if (!verifyProof(decoded, associatedData)) {
     throw new BtxError("ClientNizkFailed", "the client proof does not verify");
   }
-  return commitment;
+  return decoded;
+}
+
+/**
+ * Decodes and admits received wire bytes in one operation, enforcing the size limit before
+ * copying payload bytes or doing curve work. Returns owned ciphertext bytes.
+ *
+ * The returned arrays remain mutable; later operations validate them again.
+ * @throws {BtxError} If the encoding, size limit, commitment, or proof is rejected.
+ * @throws {TypeError} If bytes or associated data is not a Uint8Array.
+ */
+function admitCiphertext(
+  bytes: Uint8Array,
+  associatedData: Uint8Array,
+  options: DeserializeOptions = {},
+): Ciphertext {
+  abytes(bytes);
+  return validateCiphertext(bytes, associatedData, options).ciphertext;
 }
 
 /**
  * Admits a ciphertext by checking its commitment and client proof against associated data
- * (the specification's verify_ciphertext). Decode received bytes with deserializeCiphertext first.
+ * (the specification's verify_ciphertext). Use admitCiphertext for received wire bytes.
  *
  * @returns Nothing on success; does not decrypt or check a plaintext witness.
  * @throws {BtxError} If the commitment or proof is rejected.
@@ -284,10 +301,11 @@ function verifyDecryption({
   );
   if (!equalBytes(ciphertext.maskedSeed, expectedMaskedSeed)) return false;
   const stream = prg(kdf(seed, associatedData), padded.length);
-  return equalBytes(ciphertext.maskedPayload, xorBytes(padded, stream));
+  return equalBytes(ciphertext.maskedPayload, xorInto(padded, stream));
 }
 
 export {
+  admitCiphertext,
   assertValidCiphertext,
   encrypt,
   encryptPadded,

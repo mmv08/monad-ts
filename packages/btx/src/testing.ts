@@ -7,8 +7,8 @@
  */
 
 import { unpad, validateCiphertext } from "./btx.js";
-import { xorBytes } from "./bytes.js";
-import type { Ciphertext } from "./ciphertext.js";
+import { xorBytes, xorInto } from "./bytes.js";
+import type { Ciphertext, DeserializeOptions } from "./ciphertext.js";
 import { encodeGt, Fr, G1, G2, pairing, randomScalar } from "./curve.js";
 import { expandR, hKem, hRho, kdf, prg } from "./hash.js";
 
@@ -35,7 +35,8 @@ type TestKey = {
   /** B_max the key was generated for. */
   readonly maxBatchSize: number;
   /**
-   * Decrypts one ciphertext as batch_decrypt would for its slot.
+   * Admits and decrypts one ciphertext. Pass wire bytes to decode and verify once.
+   * Options apply to wire bytes, before payload copying and curve work.
    *
    * @returns Plaintext and seed, or null if padding is malformed or the guardrail fails.
    * @throws {BtxError} If admission rejects the commitment or proof.
@@ -43,8 +44,9 @@ type TestKey = {
    * @throws {RangeError} If the masked seed is not 16 bytes.
    */
   decrypt(
-    ciphertext: Ciphertext,
+    ciphertext: Ciphertext | Uint8Array,
     associatedData: Uint8Array,
+    options?: DeserializeOptions,
   ): Decryption | null;
 };
 
@@ -78,16 +80,20 @@ function createTestKey(options: TestKeyOptions = {}): TestKey {
     encryptionKey,
     trapdoor,
     maxBatchSize,
-    decrypt(ciphertext, associatedData) {
-      const commitment = validateCiphertext(ciphertext, associatedData);
+    decrypt(input, associatedData, options) {
+      const { ciphertext, commitment } = validateCiphertext(
+        input,
+        associatedData,
+        options,
+      );
       const pad = pairing(commitment, hole);
       const seed = xorBytes(
         ciphertext.maskedSeed,
         hKem(pad, ciphertext.commitment, associatedData),
       );
-      const padded = xorBytes(
-        ciphertext.maskedPayload,
+      const padded = xorInto(
         prg(kdf(seed, associatedData), ciphertext.maskedPayload.length),
+        ciphertext.maskedPayload,
       );
       const plaintext = unpad(padded);
       if (plaintext === null) return null;
