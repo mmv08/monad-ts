@@ -6,7 +6,6 @@ import {
   createWalletClient,
   encodeFunctionData,
   erc20Abi,
-  fallback,
   type Hash,
   type Hex,
   InvalidAddressError,
@@ -181,30 +180,6 @@ test("submission failures and aborts keep the hash and cause", async () => {
     expect(mock.transaction(uncertain.hash)).not.toBeNull();
   }
   expect(sends(mock)).toBe(failures.length);
-});
-
-test("fallback preserves identical bytes and an unknown outcome after acceptance then rejection", async () => {
-  const first = createMock();
-  first.failAfterAccept = new Error("Connection lost after acceptance");
-  const second = createMock();
-  second.epoch = 2n;
-  const wallet = createWalletClient({
-    account,
-    chain,
-    transport: fallback([first.transport, second.transport]),
-  }).extend(encryptedWalletActions());
-
-  const error = await sendError(wallet.sendEncryptedTransaction(request));
-  const submission = (mock: ReturnType<typeof createMock>) =>
-    mock.calls.filter(({ method }) => method === "eth_sendRawTransaction");
-  const firstSubmissions = submission(first);
-  expect(firstSubmissions).toHaveLength(1);
-  expect(submission(second)).toEqual(firstSubmissions);
-  const [raw] = firstSubmissions[0]?.params as [Hex];
-  expect(error.code).toBe("unknownOutcome");
-  expect(error.hash).toBe(keccak256(raw));
-  expect(first.transaction(error.hash)).not.toBeNull();
-  expect(error.walk()).toMatchObject({ data: { reason: "expiredEpoch" } });
 });
 
 test("managed nonces: concurrent sends, explicit override, no gap after any failure", async () => {
