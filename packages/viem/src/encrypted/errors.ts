@@ -4,7 +4,6 @@ export type EncryptedTransactionErrorCode =
   | "invalidInput"
   | "unsupportedSigner"
   | "unavailable"
-  | "rejected"
   | "unknownOutcome";
 
 /** An ETX-specific failure. On a failed submission, `hash` identifies the attempted send. */

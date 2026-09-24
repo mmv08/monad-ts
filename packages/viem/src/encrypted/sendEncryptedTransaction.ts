@@ -2,7 +2,6 @@ import { encrypt, serializeCiphertext } from "@monad-crypto/btx";
 import {
   type Account,
   assertRequest,
-  type BaseError,
   bytesToHex,
   type Chain,
   type Client,
@@ -162,26 +161,12 @@ export async function sendEncryptedTransaction<
     // so the next send reads the pending nonce from the node again.
     nonceManager?.reset({ address: account.address, chainId });
     if (hash === undefined) throw error;
-    // Only a structured backend reason among the causes proves rejection; any
-    // other failure may follow acceptance. Viem passes aborts through unwrapped,
-    // so, as in viem, `walk` is called only if the error has it.
-    const cause = error as BaseError;
-    throw cause.walk?.(hasReason)
-      ? new EncryptedTransactionError(
-          "rejected",
-          "The backend rejected the encrypted transaction.",
-          { hash, cause },
-        )
-      : new EncryptedTransactionError(
-          "unknownOutcome",
-          "Submission outcome is unknown; look up the original hash before taking further action.",
-          { hash, cause },
-        );
+    // A fallback transport may have reached another backend before this error.
+    // Even a structured rejection cannot prove that none accepted the bytes.
+    throw new EncryptedTransactionError(
+      "unknownOutcome",
+      "Submission outcome is unknown; look up the original hash before taking further action.",
+      { hash, cause: error as Error },
+    );
   }
-}
-
-function hasReason(error: unknown): boolean {
-  const reason = (error as { data?: { reason?: unknown } } | null)?.data
-    ?.reason;
-  return typeof reason === "string";
 }

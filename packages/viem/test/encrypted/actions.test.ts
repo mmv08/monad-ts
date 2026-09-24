@@ -6,6 +6,7 @@ import {
   createWalletClient,
   encodeFunctionData,
   erc20Abi,
+  fallback,
   type Hash,
   type Hex,
   InvalidAddressError,
@@ -164,9 +165,8 @@ test("a wrong key passes admission but fails decryption, through a decorator's d
   });
 });
 
-test("an uncertain submission keeps the hash and cause, and sends once", async () => {
-  // The transport retries by default, and viem passes aborts through
-  // unwrapped; the action must still send once and keep the hash.
+test("submission failures and aborts keep the hash and cause", async () => {
+  // Viem passes aborts through unwrapped; both failures must keep the hash.
   const { mock, wallet } = setup();
   const failures = [
     new Error("Connection lost after acceptance"),
@@ -181,6 +181,30 @@ test("an uncertain submission keeps the hash and cause, and sends once", async (
     expect(mock.transaction(uncertain.hash)).not.toBeNull();
   }
   expect(sends(mock)).toBe(failures.length);
+});
+
+test("fallback preserves identical bytes and an unknown outcome after acceptance then rejection", async () => {
+  const first = createMock();
+  first.failAfterAccept = new Error("Connection lost after acceptance");
+  const second = createMock();
+  second.epoch = 2n;
+  const wallet = createWalletClient({
+    account,
+    chain,
+    transport: fallback([first.transport, second.transport]),
+  }).extend(encryptedWalletActions());
+
+  const error = await sendError(wallet.sendEncryptedTransaction(request));
+  const submission = (mock: ReturnType<typeof createMock>) =>
+    mock.calls.filter(({ method }) => method === "eth_sendRawTransaction");
+  const firstSubmissions = submission(first);
+  expect(firstSubmissions).toHaveLength(1);
+  expect(submission(second)).toEqual(firstSubmissions);
+  const [raw] = firstSubmissions[0]?.params as [Hex];
+  expect(error.code).toBe("unknownOutcome");
+  expect(error.hash).toBe(keccak256(raw));
+  expect(first.transaction(error.hash)).not.toBeNull();
+  expect(error.walk()).toMatchObject({ data: { reason: "expiredEpoch" } });
 });
 
 test("managed nonces: concurrent sends, explicit override, no gap after any failure", async () => {
@@ -204,7 +228,7 @@ test("managed nonces: concurrent sends, explicit override, no gap after any fail
   // After an epoch change the backend rejects a stale context with a reason.
   // The error keeps the hash of the sent bytes; a fresh send reuses the nonce.
   mock.epoch++;
-  const rejected = await sendError(
+  const error = await sendError(
     wallet.sendEncryptedTransaction({
       ...request,
       contextProvider: async () => ({
@@ -215,9 +239,9 @@ test("managed nonces: concurrent sends, explicit override, no gap after any fail
     }),
   );
   const [sent] = mock.calls.at(-1)?.params as [Hex];
-  expect(rejected.code).toBe("rejected");
-  expect(rejected.hash).toBe(keccak256(sent));
-  expect(rejected.walk()).toMatchObject({ data: { reason: "expiredEpoch" } });
+  expect(error.code).toBe("unknownOutcome");
+  expect(error.hash).toBe(keccak256(sent));
+  expect(error.walk()).toMatchObject({ data: { reason: "expiredEpoch" } });
   expect(nonceOf(await wallet.sendEncryptedTransaction(request))).toBe("0x3");
   expect(
     nonceOf(await wallet.sendEncryptedTransaction({ ...request, nonce: 10 })),

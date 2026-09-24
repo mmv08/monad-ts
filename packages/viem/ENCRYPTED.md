@@ -83,10 +83,9 @@ Validation stays where viem and BTX already do it. `assertRequest` checks addres
 - `invalidInput`: `to` is missing, or `encryptedFields` is empty or names an unknown field.
 - `unsupportedSigner`: the account is missing or not local.
 - `unavailable`: the context has no key for the active epoch.
-- `rejected`: the backend's error carried a structured `data.reason`, such as `expiredEpoch`. `error.walk()` reaches it.
-- `unknownOutcome`: the send failed or was aborted without a reason. The transaction may still be pending, so look up `hash` before acting.
+- `unknownOutcome`: submission failed or was aborted. Even a structured backend rejection cannot rule out acceptance by another endpoint in a fallback transport. The transaction may still be pending, so look up `hash` before acting. `error.walk()` reaches the original cause, including any `data.reason` such as `expiredEpoch`.
 
-On success the action returns the hash of the signed bytes; it does not compare it with the node's reply. Submission failures carry that `hash`, and the original error as `cause`. The action sends once and never re-encrypts or signs again; viem's `sendRawTransaction` already disables retries, and reads follow the transport's own retry setting. As in viem, any failure after the action takes a managed nonce resets the nonce manager, so the next send reads the pending nonce from the node. A null lookup does not prove that the node rejected a transaction.
+On success the action returns the hash of the signed bytes; it does not compare it with the node's reply. Submission failures carry that `hash`, and the original error as `cause`. Submission uses viem's default behavior: `sendRawTransaction` disables request retries, but fallback transports may send the same signed bytes to another endpoint. These bytes retain the same hash and nonce. The action never re-encrypts or signs again after a failure; rebuilding could create a different transaction. Reads follow the transport's own retry setting. As in viem, any failure after the action takes a managed nonce resets the nonce manager, so the next send reads the pending nonce from the node. A null lookup does not prove that the node rejected a transaction.
 
 ## Identity and limits
 
