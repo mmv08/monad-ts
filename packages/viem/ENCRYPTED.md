@@ -24,6 +24,15 @@ bun run packages/viem/examples/encrypted-server.ts
 
 Open `http://127.0.0.1:8545`. The server holds the test trapdoor; the browser generates its own local signing account. The server wraps the same mock, accepts same-origin requests only, and limits the body size.
 
+To run on real EVM execution, start Monad Anvil from the Foundry fork (see its `docs/dev/monad-encrypted-transactions.md`), then run the Anvil example:
+
+```sh
+anvil --network monad --monad.encrypted-transactions
+bun run packages/viem/examples/encrypted-anvil.ts
+```
+
+The example deploys a small contract with an ordinary transaction, then sends an encrypted transfer and an encrypted contract call over HTTP and reads the balance and storage back. Anvil serves the mock's test key, so it also has no threshold privacy. Set `ANVIL_URL` for another endpoint.
+
 ## API
 
 ```ts
@@ -72,7 +81,7 @@ if (receipt.type === "encrypted") {
 
 ## Context and errors
 
-By default the action reads the **internal** `monad_getEncryptionContext` RPC. It takes no arguments and returns `{ epoch, encryptionKey, available }`. It is our mock's extension, later Anvil's; the inspected Monad node code has no such method.
+By default the action reads the **internal** `monad_getEncryptionContext` RPC. It takes no arguments and returns `{ epoch, encryptionKey, available }`. It is our extension, served by the mock and by Monad Anvil; the inspected Monad node code has no such method.
 
 Pass `contextProvider: async ({ chainId, account }) => context` to the action, or to `encryptedWalletActions` as a default, for fixtures or another key source. It must return one coherent snapshot, and the caller must trust its source. When encryption is unavailable, the action fails before encrypting.
 
@@ -103,4 +112,4 @@ The regression vector is self-generated, not independent evidence of compatibili
 bun run packages/viem/test/encrypted/fixtures.ts
 ```
 
-Anvil EVM execution and comparison with a compatible node come in later phases.
+Monad Anvil executes these transactions on the EVM with the same test key. Comparison with a compatible node comes in a later phase.
