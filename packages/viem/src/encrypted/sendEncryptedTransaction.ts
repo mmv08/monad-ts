@@ -1,0 +1,172 @@
+import { encrypt, serializeCiphertext } from "@monad-crypto/btx";
+import {
+  type Account,
+  assertRequest,
+  bytesToHex,
+  type Chain,
+  type Client,
+  type Hash,
+  type Hex,
+  hexToBytes,
+  keccak256,
+  MaxFeePerGasTooLowError,
+  type Transport,
+} from "viem";
+import {
+  estimateFeesPerGas,
+  getBlock,
+  getChainId,
+  getTransactionCount,
+  sendRawTransaction,
+} from "viem/actions";
+import {
+  associatedData,
+  conceal,
+  type Envelope,
+  encodePayload,
+  maskFor,
+  type Payload,
+  serializeTransaction,
+} from "./codec.js";
+import { EncryptedTransactionError } from "./errors.js";
+import type {
+  EncryptionContext,
+  SendEncryptedTransactionParameters,
+  SendEncryptedTransactionReturnType,
+} from "./types.js";
+
+/**
+ * Encrypts and signs locally, then submits one type-8 transaction.
+ * Requires gas; never estimates or sends plaintext to the RPC.
+ * @returns The original signed transaction hash.
+ */
+export async function sendEncryptedTransaction<
+  transport extends Transport,
+  chain extends Chain | undefined,
+  account extends Account | undefined,
+>(
+  client: Client<transport, chain, account>,
+  parameters: SendEncryptedTransactionParameters<account>,
+): Promise<SendEncryptedTransactionReturnType> {
+  const { contextProvider, gas, paddedLength, to } = parameters;
+  const account = parameters.account ?? client.account;
+  // Viem does not export its account errors, so this one is ETX-specific.
+  if (account?.type !== "local")
+    throw new EncryptedTransactionError(
+      "unsupportedSigner",
+      "A local secp256k1 account is required.",
+    );
+  // An omitted recipient must never become contract creation; that takes `to: null`.
+  if (to !== null && !to)
+    throw new EncryptedTransactionError(
+      "invalidInput",
+      "Set `to`, or `to: null` to create a contract.",
+    );
+  // As in viem's sendTransaction. It is the only check on an encrypted `to`:
+  // the serializer sees the placeholder.
+  assertRequest({ ...parameters, account });
+  const payload: Payload = {
+    to,
+    value: parameters.value ?? 0n,
+    data: parameters.data ?? "0x",
+    accessList: parameters.accessList ?? [],
+  };
+  const encryptedFields = maskFor(parameters.encryptedFields);
+  const plaintext = hexToBytes(encodePayload(payload, encryptedFields));
+
+  // The steps below follow viem's prepareTransactionRequest for local accounts.
+  // Viem's version cannot be used: it may send the request to eth_fillTransaction.
+  const chainId = client.chain?.id ?? (await getChainId(client));
+  let { maxFeePerGas, maxPriorityFeePerGas } = parameters;
+  if (maxFeePerGas === undefined || maxPriorityFeePerGas === undefined) {
+    // As in viem, the estimator and fee hooks get the latest block and the
+    // request, although the action's type omits both. The request carries
+    // public fields only.
+    const feeParameters = {
+      block: await getBlock(client, { blockTag: "latest" }),
+      chain: client.chain,
+      request: { chainId, gas, maxFeePerGas, maxPriorityFeePerGas },
+    };
+    const fees = await estimateFeesPerGas(client, feeParameters);
+    if (
+      maxPriorityFeePerGas === undefined &&
+      maxFeePerGas &&
+      maxFeePerGas < fees.maxPriorityFeePerGas
+    )
+      throw new MaxFeePerGasTooLowError({
+        maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+      });
+    ({ maxFeePerGas, maxPriorityFeePerGas } = fees);
+  }
+
+  const context = contextProvider
+    ? await contextProvider({ chainId, account: account.address })
+    : await client.request<{
+        Method: "monad_getEncryptionContext";
+        Parameters: [];
+        ReturnType: EncryptionContext<Hex>;
+      }>({ method: "monad_getEncryptionContext", params: [] });
+  if (!context.available)
+    throw new EncryptedTransactionError(
+      "unavailable",
+      "Encryption is unavailable for the active epoch.",
+    );
+  const epoch = BigInt(context.epoch);
+  const nonceManager =
+    parameters.nonce === undefined ? account.nonceManager : undefined;
+  let hash: Hash | undefined;
+  try {
+    const nonce =
+      parameters.nonce ??
+      (nonceManager
+        ? await nonceManager.consume({
+            address: account.address,
+            chainId,
+            client,
+          })
+        : await getTransactionCount(client, {
+            address: account.address,
+            blockTag: "pending",
+          }));
+    const envelope: Envelope = {
+      type: "encrypted",
+      chainId,
+      nonce,
+      gas,
+      maxFeePerGas,
+      maxPriorityFeePerGas,
+      ...conceal(payload, encryptedFields),
+      epoch,
+      encryptedFields,
+      ciphertext: "0x",
+    };
+    envelope.ciphertext = bytesToHex(
+      serializeCiphertext(
+        encrypt({
+          plaintext,
+          encryptionKey: hexToBytes(context.encryptionKey),
+          associatedData: hexToBytes(associatedData(envelope, account.address)),
+          paddedLength,
+        }),
+      ),
+    );
+    const serializedTransaction = await account.signTransaction(envelope, {
+      serializer: serializeTransaction,
+    });
+    hash = keccak256(serializedTransaction);
+    await sendRawTransaction(client, { serializedTransaction });
+    return hash;
+  } catch (error) {
+    // As in viem, any failure once a nonce is taken resets the nonce manager,
+    // so the next send reads the pending nonce from the node again.
+    nonceManager?.reset({ address: account.address, chainId });
+    if (hash === undefined) throw error;
+    // A fallback transport may have reached another backend before this error.
+    // Even a structured rejection cannot prove that none accepted the bytes.
+    throw new EncryptedTransactionError(
+      "unknownOutcome",
+      "Submission outcome is unknown; look up the original hash before taking further action.",
+      { hash, cause: error as Error },
+    );
+  }
+}

@@ -1,8 +1,8 @@
 [install]
 ignoreScripts = true
-minimumReleaseAge = 2419200
 
 [test]
 preload = ["./packages/mpp/test/setup.ts", "./packages/viem/test/setup.ts"]
 timeout = 15000
 coverageThreshold = 1
+coveragePathIgnorePatterns = ["**/dist/**", "**/test/**"]

@@ -2,6 +2,8 @@
 
 TypeScript library for Monad-specific protocol features. Provides [Viem](https://viem.sh) actions for interacting with the staking precompile and WMON token on Monad.
 
+This checkout also includes the internal [`@monad-crypto/viem/encrypted`](./ENCRYPTED.md) entry point: local encryption/signing, `sendEncryptedTransaction`, and typed query formatters. Build it from the workspace; it depends on the private BTX package. The installation commands below refer to the existing published read-only version.
+
 ## Installation
 
 ```bash

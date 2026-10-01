@@ -1,0 +1,82 @@
+import {
+  createPublicClient,
+  createWalletClient,
+  custom,
+  type Hash,
+} from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import {
+  type DecryptionStatus,
+  encryptedWalletActions,
+  sendEncryptedTransaction,
+} from "../../src/encrypted/index.js";
+import { chain } from "./mock.js";
+
+// Compile-only consumer checks. This function is never invoked.
+export async function checkTypes() {
+  const transport = custom({ request: async () => null });
+  const account = privateKeyToAccount(`0x${"01".repeat(32)}`);
+  const contextProvider = async () => ({
+    available: false as const,
+    epoch: 0n,
+    encryptionKey: null,
+  });
+  const wallet = createWalletClient({ account, chain, transport }).extend(
+    encryptedWalletActions({ contextProvider }),
+  );
+  const unbound = createWalletClient({ chain, transport }).extend(
+    encryptedWalletActions(),
+  );
+  const to = "0x1111111111111111111111111111111111111111";
+  const hash: Hash = await wallet.sendEncryptedTransaction({
+    to,
+    gas: 21_000n,
+  });
+  await sendEncryptedTransaction(wallet, { to, gas: 21_000n, contextProvider });
+  await unbound.sendEncryptedTransaction({ account, to, gas: 21_000n });
+  // @ts-expect-error gas is required
+  await wallet.sendEncryptedTransaction({ to });
+  // @ts-expect-error explicit local account required
+  await unbound.sendEncryptedTransaction({ to, gas: 21_000n });
+  // @ts-expect-error JSON-RPC address is not a local signer
+  await wallet.sendEncryptedTransaction({ account: to, to, gas: 21_000n });
+  // @ts-expect-error creation requires initcode
+  await wallet.sendEncryptedTransaction({ to: null, gas: 21_000n });
+  // @ts-expect-error unsupported blob fields
+  await wallet.sendEncryptedTransaction({ to, gas: 21_000n, blobs: [] });
+  await wallet.sendEncryptedTransaction({
+    to,
+    gas: 21_000n,
+    // @ts-expect-error empty mask is invalid
+    encryptedFields: [],
+  });
+  await wallet.sendEncryptedTransaction({
+    to,
+    gas: 21_000n,
+    // @ts-expect-error unknown field
+    encryptedFields: ["nonce"],
+  });
+  await wallet.sendEncryptedTransaction({
+    to,
+    gas: 21_000n,
+    // @ts-expect-error nodes do not accept an encrypted value yet
+    encryptedFields: ["value"],
+  });
+  const publicClient = createPublicClient({ chain, transport });
+  const transaction = await publicClient.getTransaction({ hash });
+  if (transaction.type === "encrypted") {
+    const epoch: bigint = transaction.epoch;
+    void epoch;
+  }
+  const block = await publicClient.getBlock({ includeTransactions: true });
+  for (const transaction of block.transactions)
+    if (transaction.type === "encrypted") {
+      const epoch: bigint = transaction.epoch;
+      void epoch;
+    }
+  const receipt = await publicClient.waitForTransactionReceipt({ hash });
+  const status: DecryptionStatus | undefined = receipt.decryptionStatus;
+  const reason: string | undefined = receipt.failureReason;
+  void status;
+  void reason;
+}

@@ -1,0 +1,300 @@
+import { admitCiphertext } from "@monad-crypto/btx";
+import { createTestKey } from "@monad-crypto/btx/testing";
+import * as AccessList from "ox/AccessList";
+import * as Rlp from "ox/Rlp";
+import * as Secp256k1 from "ox/Secp256k1";
+import * as Signature from "ox/Signature";
+import {
+  type Address,
+  bytesToHex,
+  custom,
+  defineChain,
+  type Hex,
+  hexToBigInt,
+  hexToBytes,
+  keccak256,
+  toHex,
+} from "viem";
+import {
+  associatedData,
+  type Envelope,
+  type Payload,
+  selectedFields,
+  serializeEnvelope,
+} from "../../src/encrypted/codec.js";
+import {
+  type DecryptionStatus,
+  encryptedFormatters,
+} from "../../src/encrypted/index.js";
+
+export const chain = defineChain({
+  id: 1337,
+  name: "ETX mock (no EVM execution)",
+  nativeCurrency: { name: "Monad", symbol: "MON", decimals: 18 },
+  rpcUrls: { default: { http: ["http://127.0.0.1:8545"] } },
+  formatters: encryptedFormatters,
+  supportsTransactionReplacementDetection: false,
+});
+
+const zeroHash = `0x${"00".repeat(32)}` as const;
+const bloom = `0x${"00".repeat(256)}` as const;
+type Entry = {
+  envelope: Envelope;
+  signature: Signature.Signature;
+  sender: Address;
+  ad: Hex;
+  status: DecryptionStatus;
+  payload?: Payload;
+  block?: bigint;
+};
+
+/** A rejection in the ETX RPC's shape: -32000 with a machine-readable reason. */
+function rpcError(reason: string) {
+  return Object.assign(new Error("ETX rejected"), {
+    code: -32000,
+    data: { reason },
+  });
+}
+
+// Received-byte decoding belongs to this test backend, not the sender library.
+// It requires every field and a parity of 0 or 1; admission checks the rest.
+const quantity = (value: Hex) => (value === "0x" ? 0n : hexToBigInt(value));
+const recipient = (value: Hex) => (value === "0x" ? null : value);
+const accessList = (value: unknown) =>
+  AccessList.fromTupleList(value as AccessList.Tuple);
+
+async function parseEnvelope(raw: Hex) {
+  try {
+    const values = Rlp.toHex(`0x${raw.slice(4)}`) as Hex[];
+    const [
+      chainId,
+      nonce,
+      maxPriorityFeePerGas,
+      maxFeePerGas,
+      gas,
+      to,
+      value,
+      data,
+      list,
+      epoch,
+      mask,
+      ciphertext,
+      yParity,
+      r,
+      s,
+    ] = values;
+    const envelope: Envelope = {
+      type: "encrypted",
+      chainId: Number(quantity(chainId)),
+      nonce: Number(quantity(nonce)),
+      maxPriorityFeePerGas: quantity(maxPriorityFeePerGas),
+      maxFeePerGas: quantity(maxFeePerGas),
+      gas: quantity(gas),
+      to: recipient(to),
+      value: quantity(value),
+      data,
+      accessList: accessList(list),
+      epoch: quantity(epoch),
+      encryptedFields: Number(quantity(mask)),
+      ciphertext,
+    };
+    const signature = Signature.fromTuple([yParity, r, s]);
+    const sender = Secp256k1.recoverAddress({
+      payload: keccak256(serializeEnvelope(envelope)),
+      signature,
+    });
+    return { envelope, signature, sender };
+  } catch {
+    throw rpcError("invalidEnvelope");
+  }
+}
+
+/** Restores the selected fields from a decrypted payload. */
+function decodePayload(plaintext: Hex, envelope: Envelope): Payload {
+  const values = Rlp.toHex(plaintext) as Hex[];
+  const payload: Payload = {
+    to: envelope.to,
+    value: envelope.value,
+    data: envelope.data,
+    accessList: envelope.accessList,
+  };
+  selectedFields(envelope.encryptedFields).forEach((field, index) => {
+    const value = values[index] as Hex;
+    if (field === "to") payload.to = recipient(value);
+    else if (field === "value") payload.value = quantity(value);
+    else if (field === "data") payload.data = value;
+    else payload.accessList = accessList(value);
+  });
+  return payload;
+}
+
+/** Test-only, single-trapdoor backend. Receipts are scripted, never EVM execution. */
+export function createMock() {
+  const entries = new Map<Hex, Entry>();
+  const nonces = new Map<string, number>();
+  let height = 0n;
+  const mock = {
+    key: createTestKey({ trapdoor: 42n }),
+    epoch: 1n,
+    available: true,
+    /** Thrown after acceptance, as a dropped or aborted connection would be. */
+    failAfterAccept: undefined as unknown,
+    calls: [] as { method: string; params?: unknown }[],
+    async request({
+      method,
+      params,
+    }: {
+      method: string;
+      params?: unknown;
+    }): Promise<unknown> {
+      mock.calls.push({ method, params });
+      const args = Array.isArray(params) ? params : [];
+      switch (method) {
+        case "monad_getEncryptionContext":
+          return {
+            epoch: toHex(mock.epoch),
+            available: mock.available,
+            encryptionKey: mock.available
+              ? bytesToHex(mock.key.encryptionKey)
+              : null,
+          };
+        case "eth_getTransactionCount": {
+          const address = String(args[0]).toLowerCase();
+          let nonce = nonces.get(address) ?? 0;
+          if (args[1] === "pending")
+            for (const entry of entries.values())
+              if (
+                entry.sender.toLowerCase() === address &&
+                entry.status === "pending" &&
+                entry.envelope.nonce >= nonce
+              )
+                nonce = entry.envelope.nonce + 1;
+          return toHex(nonce);
+        }
+        case "eth_maxPriorityFeePerGas":
+          return "0x1";
+        case "eth_blockNumber":
+          return toHex(height);
+        case "eth_sendRawTransaction": {
+          const raw = args[0] as Hex;
+          const { envelope, signature, sender } = await parseEnvelope(raw);
+          if (envelope.epoch !== mock.epoch) throw rpcError("expiredEpoch");
+          // The binding uses the recovered sender, so another signer fails the proof.
+          const ad = associatedData(envelope, sender);
+          try {
+            admitCiphertext(hexToBytes(envelope.ciphertext), hexToBytes(ad));
+          } catch {
+            throw rpcError("invalidProof");
+          }
+          const hash = keccak256(raw);
+          entries.set(hash, {
+            envelope,
+            signature,
+            sender,
+            ad,
+            status: "pending",
+          });
+          if (mock.failAfterAccept) throw mock.failAfterAccept;
+          return hash;
+        }
+        case "eth_getTransactionByHash":
+          return mock.transaction(args[0]);
+        case "eth_getTransactionReceipt":
+          return mock.receipt(args[0]);
+        case "eth_getBlockByNumber":
+          return {
+            hash: zeroHash,
+            parentHash: zeroHash,
+            number: toHex(height),
+            timestamp: "0x1",
+            baseFeePerGas: "0x1",
+            gasLimit: "0x1c9c380",
+            gasUsed: "0x0",
+            miner: "0x0000000000000000000000000000000000000000",
+            difficulty: "0x0",
+            extraData: "0x",
+            logsBloom: bloom,
+            transactions: [...entries]
+              .filter(([, entry]) => entry.block === height)
+              .map(([hash]) => (args[1] ? mock.transaction(hash) : hash)),
+          };
+        default:
+          throw Object.assign(new Error(`Unsupported mock method: ${method}`), {
+            code: -32601,
+          });
+      }
+    },
+    transaction(hash: unknown) {
+      const entry =
+        typeof hash === "string" ? entries.get(hash as Hex) : undefined;
+      if (!entry) return null;
+      const { envelope: tx, signature, payload } = entry;
+      return {
+        hash,
+        type: "0x8",
+        from: entry.sender,
+        to: payload ? payload.to : tx.to,
+        value: toHex(payload?.value ?? tx.value),
+        input: payload?.data ?? tx.data,
+        accessList: payload?.accessList ?? tx.accessList,
+        chainId: toHex(tx.chainId),
+        nonce: toHex(tx.nonce),
+        gas: toHex(tx.gas),
+        maxPriorityFeePerGas: toHex(tx.maxPriorityFeePerGas),
+        maxFeePerGas: toHex(tx.maxFeePerGas),
+        epoch: toHex(tx.epoch),
+        encryptedFields: toHex(tx.encryptedFields),
+        ciphertext: tx.ciphertext,
+        decryptionStatus: entry.status,
+        r: toHex(signature.r, { size: 32 }),
+        s: toHex(signature.s, { size: 32 }),
+        yParity: toHex(signature.yParity),
+        v: toHex(signature.yParity),
+        blockHash: entry.block === undefined ? null : zeroHash,
+        blockNumber: entry.block === undefined ? null : toHex(entry.block),
+        transactionIndex: entry.block === undefined ? null : "0x0",
+      };
+    },
+    receipt(hash: unknown) {
+      const entry =
+        typeof hash === "string" ? entries.get(hash as Hex) : undefined;
+      if (!entry || entry.block === undefined) return null;
+      const failed = entry.status === "failed";
+      return {
+        transactionHash: hash,
+        transactionIndex: "0x0",
+        blockHash: zeroHash,
+        blockNumber: toHex(entry.block),
+        from: entry.sender,
+        to: entry.payload ? entry.payload.to : entry.envelope.to,
+        type: "0x8",
+        cumulativeGasUsed: toHex(entry.envelope.gas),
+        gasUsed: toHex(entry.envelope.gas),
+        effectiveGasPrice: "0x2",
+        status: failed ? "0x0" : "0x1",
+        contractAddress: null,
+        logs: [],
+        logsBloom: bloom,
+        decryptionStatus: entry.status,
+        ...(failed ? { failureReason: "decryptionFailed" } : {}),
+      };
+    },
+    /** Mines a pending entry, decrypting it with the mock's key. */
+    include(hash: Hex) {
+      const entry = entries.get(hash);
+      if (!entry || entry.block !== undefined)
+        throw new Error("Expected a pending transaction");
+      const decrypted = mock.key.decrypt(
+        hexToBytes(entry.envelope.ciphertext),
+        hexToBytes(entry.ad),
+      );
+      entry.payload = decrypted
+        ? decodePayload(bytesToHex(decrypted.plaintext), entry.envelope)
+        : undefined;
+      entry.status = entry.payload ? "succeeded" : "failed";
+      entry.block = ++height;
+      nonces.set(entry.sender.toLowerCase(), entry.envelope.nonce + 1);
+    },
+  };
+  return Object.assign(mock, { transport: custom(mock) });
+}
